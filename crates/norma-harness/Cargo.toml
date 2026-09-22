@@ -1,6 +1,6 @@
 [package]
-name = "village-harness"
-description = "Hot-pluggable RDF and RTDF runtime for the Resident architecture"
+name = "norma-harness"
+description = "Resident registration and message routing for Norma Harness"
 edition.workspace = true
 license.workspace = true
 readme.workspace = true
@@ -12,15 +12,8 @@ version.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-village-harness-protocol = { path = "../village-harness-protocol", version = "0.1.0" }
 thiserror.workspace = true
 tokio.workspace = true
-tracing.workspace = true
-uuid.workspace = true
-wasmi.workspace = true
-
-[dev-dependencies]
-wat = "1.239.0"
 
 [lints]
 workspace = true

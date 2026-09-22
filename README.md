@@ -1,87 +1,194 @@
-# Village Harness
+# Norma Harness
 
-Village Harness 是一个面向模块热插拔的数据流运行内核。每个 AgentThread 构成一座“村庄”，系统模块作为 Resident 接入。Layout 持有全部 Resident 实例，业务 Resident 只处理数据上下文并产生 Emission，不能通过框架 API 取得其他 Resident 实例。
+[English](#english) · [中文](#中文)
 
-Resident 有两种执行路径：零宿主导入的 WASM Resident 提供强隔离；受信任的 Native Resident 直接实现 Rust `Resident` trait，提供类似普通应用框架的开发体验。两者使用同一 RDF 注册、RTDF 投递和 Gate 生命周期。
+## English
 
-Layout 由两个容器组成：
+Norma Harness connects independently operated services called **Residents** through two narrow data flows.
 
-- **RDF（Registration Data Flow）**：接收 WASM artifact、Native Resident registration 与 Gate Factory 的成组注册请求，在 Turn 边界发布不可变注册快照。RDF 只注册 Resident，不解释 Resident 内部业务。
-- **RTDF（Runtime Data Flow）**：为每个 AgentThread 建立独立 Resident 实例和私有信箱，串行投递调用，执行 Gate 并提交状态迁移。
+- **RDF (Registration Data Flow)** is the sole registration authority. It checks Resident names, owns successfully registered instances through its private ResidentStore, records public endpoints, and announces new registrations.
+- **RTDF (Runtime Data Flow)** carries one message from a registered source to a registered target through the source outbound Gate, target inbound Gate, and target mailbox.
+- **NormaHarness** is the composition root. It starts RDF and RTDF and supplies the two channel-only handles that applications inject into Residents.
 
-## 核心语义
+Each Resident still controls its own business execution, state, dependencies, retries, cancellation, fallback, rollback, and safe shutdown boundary.
 
-- WASM Resident 以 `ResidentArtifact`（profile、WASM bytes、资源限制）注册；模块不允许任何 import，因此没有 WASI、文件、网络、时钟、宿主回调或其他 Resident handle。
-- Native Resident 实现公开的 `Resident::handle`，通过 `NativeResidentRegistration` 注册。Layout 为每个 AgentThread 调用 Factory 创建新实例，只向它提供受限的 `ResidentContext`。Native 代码属于受信任宿主代码，不具有 WASM 的敌对代码隔离保证。
-- `ResidentContext::send`、`reply` 和 `emit` 只暂存 Emission；实际数据包和投递仍由 RTDF 在 `handle` 成功返回后完成。RDF、RTDF、mailbox 和其他 Resident 实例都不进入 Context。
-- Resident 返回只包含目标与消息的 `Emission`。RTDF 生成新的消息 ID，保留 correlation，并推进 hop 后完成投递；框架不维护或验证发送者身份。
-- RDF 的内部 `RegistrationSnapshot` 只进入 RTDF。居民看到的是 RTDF 投影出的 `ResidentDirectorySnapshot`，其中只有门牌、接受的消息类型和公开能力，不含模块、Store、mailbox、Factory 或 Gate。
-- Resident 生命周期固定为 `BeforeReceive → Execute → AfterExecute → BeforeCommit → Commit`，失败进入 `OnFailure`。这些 Hook 独立于 Gate 定义。
-- Gate 是挂载到指定 `ResidentKey + ResidentHookPoint` 的受信任关卡，不再全局观察所有数据；没有 Hook 或引用不存在居民的 Gate 会被 RDF 拒绝。
-- `ToolResident` 是普通 Native Resident。它在内部维护 Tool Catalog 和具体 Tool 实例，通过 `tools.list`、`tools.invoke`、`tools.cancel` 消息提供能力；RDF 和 Resident Directory 只看到整个 ToolResident，不看到单个 Tool。
-- Gate 只挂到整个 ToolResident 的生命周期。单个 Tool 的参数清洗、业务校验和业务错误处理直接属于该 Tool 的实现，不存在 Tool 级 Gate。
-- 普通用户 Resident 不要求注册或依赖 ToolResident；只有需要工具时才通过 RTDF 向某个 ToolResident 发送消息。
-- 相关 Resident/Gate 更新组成同一注册事务；任一实例初始化失败，AgentThread 保留完整旧 RuntimeSet。
-- 运行中的 Turn 固定当前实例集合；热更新在该 AgentThread 的下一 Turn 生效。
-- Resident 决定数据下一跳，可前进、返回或循环；RTDF 只执行数据流。
-- 状态机定义归 Resident，统一注册给 Layout；实际状态实例位于 AgentThreadContext，由 RTDF 根据 Resident 事件迁移。
-- Thread 进入硬休眠时释放 Resident、Gate、Context 和运行连接，恢复时使用最新注册快照重新建立。
+### Sequence
 
-## 最小 Native Resident
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Application
+    participant LLM as LLM Resident
+    participant Reg as RegistrationSender
+    participant RDF
+    participant Store as ResidentStore
+    participant Msg as MessageSender
+    participant RTDF
+    participant Service as Service Resident
 
-用户只实现业务方法；RDF 注册、RTDF 投递、Gate 生命周期和状态提交仍由内核控制，不能被 Resident 覆盖：
+    App->>LLM: construct(RegistrationSender, MessageSender)
+    LLM->>Reg: register(Arc<Self>)
+    Reg->>RDF: Register command
+    RDF->>LLM: read descriptor, mailbox, Gates
+    RDF->>RDF: validate instance and unique name
+    RDF->>Store: insert(InstanceId, instance)
+    RDF->>RDF: commit registration record and endpoints
+    RDF->>Service: enqueue ResidentRegistered(LLM)
+    RDF-->>Reg: receipt + existing Residents
+    Reg-->>LLM: registration receipt
+
+    LLM->>Msg: send(InstanceId, Service name, message)
+    Msg->>RTDF: Route command
+    RTDF->>RDF: resolve source and target endpoints
+    RDF-->>RTDF: names, Gates, target mailbox
+    RTDF->>LLM: source outbound Gate
+    LLM-->>RTDF: accepted or transformed message
+    RTDF->>Service: target inbound Gate
+    Service-->>RTDF: accepted or transformed message
+    RTDF->>Service: enqueue RoutedMessage
+    RTDF-->>Msg: delivery result
+    Msg-->>LLM: delivery result
+
+    LLM->>LLM: stop new work and drain owned work
+    LLM->>Reg: unregister(InstanceId)
+    Reg->>RDF: Unregister command
+    RDF->>RDF: remove registration record
+    RDF->>Store: remove instance ownership
+    RDF-->>LLM: unregistration result
+```
+
+### Ownership and dependency direction
+
+```text
+NormaHarness
+├── owns ──▶ RDF
+│            └── owns ──▶ ResidentStore
+│                           └── owns ──▶ Resident instance
+└── owns ──▶ RTDF
+             └── reads ──▶ RDF directory
+
+Resident instance
+├── owns ──▶ RegistrationSender ──▶ channel only
+└── owns ──▶ MessageSender      ──▶ channel only
+```
+
+`RegistrationSender` does not own RDF. `MessageSender` does not own RTDF. The RDF and RTDF command loops hold only `Weak` references to their cores and do not store self-capturing task handles. Therefore the framework introduces no strong path from a stored Resident back to RDF or RTDF.
+
+Injection is deliberately narrow:
 
 ```rust
-use async_trait::async_trait;
-use village_harness::{
-    NativeResidentRegistration, RegistrationBatch, Resident, ResidentContext,
-};
-use village_harness::protocol::{
-    FlowMessage, MessageKind, ResidentError, ResidentKey, ResidentProfile,
-};
+let harness = NormaHarness::new();
+let registration = harness.registration_sender();
+let messages = harness.message_sender();
 
-struct Greeter;
+let resident = Arc::new(MyResident::new(
+    registration.clone(),
+    messages,
+));
 
-#[async_trait]
-impl Resident for Greeter {
-    async fn handle(&mut self, context: &mut ResidentContext) -> Result<(), ResidentError> {
-        context.reply(FlowMessage::new(
-            MessageKind::new("greet.result").unwrap(),
-            context.message().payload.clone(),
-        ));
-        Ok(())
-    }
-}
-
-fn registration_batch() -> RegistrationBatch {
-    let registration = NativeResidentRegistration::new(
-        ResidentProfile::new(ResidentKey::new("greeter").unwrap())
-            .with_accepted_message(MessageKind::new("greet").unwrap()),
-        || Greeter,
-    );
-    RegistrationBatch::new().upsert_native_resident(registration)
-}
+let receipt = registration.register(resident).await?;
 ```
 
-需要共享工具时，再单独构造一个 `ToolResident` 并将它作为普通 Native Resident 放进同一个 `RegistrationBatch`。业务 Resident 不实现任何工具注册接口，只向该居民的门牌发送 `ToolInvokeRequest`。
+The registration request carries the real `Arc<dyn Resident>`. RDF reads the descriptor, mailbox, and Gates from that instance. After the same-name check succeeds, RDF assigns a non-reusable `ResidentInstanceId`, inserts the instance into ResidentStore, and commits the registration record in the same command. A rejected instance is not retained.
 
-## Workspace
+RDF records the mailbox and Gate addresses required for delivery. RTDF reads those immutable registration endpoints directly from RDF and never opens ResidentStore or calls Resident business methods.
 
-| Crate | 职责 |
-| --- | --- |
-| `village-harness-protocol` | Resident 的纯数据 ABI、Gate、数据包、标识符和状态机契约 |
-| `village-harness` | Native/WASM Resident Host、内置 ToolResident、RDF、RTDF、私有信箱、热更新与 AgentThread 生命周期 |
+### Registration and shutdown contract
 
-详细约束见 [架构文档](docs/ARCHITECTURE.md) 与 [Resident ABI](docs/RESIDENT_ABI.md)。
+Registration is initiated by the Resident when its public endpoints are ready. Unregistration is its final framework action:
 
-## 校验
-
-```shell
-cargo test --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all -- --check
+```text
+construct Resident with channel handles
+→ Resident submits itself for registration
+→ Resident performs its work
+→ Resident stops accepting new work
+→ Resident drains or cancels work it owns
+→ Resident unregisters
+→ RDF removes both registration and Store ownership
+→ Resident execution returns
 ```
 
-## License
+RDF does not wait for `Resident::run` during unregistration. Otherwise the Resident could wait for RDF while RDF waited for the same Resident to finish. Sending `unregister` is the Resident's declaration that its own shutdown boundary has been reached.
 
-Apache-2.0
+An RTDF delivery that already copied its endpoint handles may finish concurrently with unregistration. A concrete Resident must close or guard its mailbox and Gates as part of its own shutdown boundary.
+
+### Explicitly out of scope
+
+Norma Harness does not provide sessions, threads, turns, workflow execution, context compression, state machines, checkpoints, persistence, retry policies, cancellation policies, rollback, recovery, durable execution, Ledger, WASM hosting, hot-update activation, version rollback, or business result interpretation.
+
+See [Architecture](docs/ARCHITECTURE.md) for the complete invariants and module boundaries.
+
+## 中文
+
+Norma Harness 通过两个范围明确的数据流连接称为 **Resident** 的独立服务。
+
+- **RDF（Registration Data Flow，注册数据流）**是唯一注册权威。它审核 Resident 名称，通过内部 ResidentStore 持有注册成功的实例，保存公开端点，并广播新注册事件。
+- **RTDF（Runtime Data Flow，运行数据流）**负责一跳消息传递，固定经过源 Resident 的传出 Gate、目标 Resident 的传入 Gate和目标邮箱。
+- **NormaHarness** 是组合根。它启动 RDF 和 RTDF，并提供两个仅包含通道发送端的句柄，由应用注入 Resident。
+
+每个 Resident 仍然自行控制业务执行、状态、依赖、重试、取消、回退、回滚和安全退出边界。
+
+### 时序
+
+上面的时序图同时描述中文版流程：应用只向 Resident 注入两个通道 Sender；Resident 准备完成后把真实实例提交给 RDF；RDF 在一次注册命令中完成同名审核、实例保存和注册记录提交；RTDF 只通过 RDF 保存的端点传递消息；Resident 最后主动注销，RDF 同时删除注册和实例所有权。
+
+### 所有权与依赖方向
+
+```text
+NormaHarness
+├── 持有 ──▶ RDF
+│            └── 持有 ──▶ ResidentStore
+│                           └── 持有 ──▶ Resident 实例
+└── 持有 ──▶ RTDF
+             └── 只读 ──▶ RDF 注册目录
+
+Resident 实例
+├── 持有 ──▶ RegistrationSender ──▶ 仅通道
+└── 持有 ──▶ MessageSender      ──▶ 仅通道
+```
+
+`RegistrationSender` 不持有 RDF，`MessageSender` 不持有 RTDF。RDF 和 RTDF 的命令循环只持有核心对象的 `Weak`，也不保存捕获自身的任务句柄。因此框架中不存在从 Store 内 Resident 返回 RDF 或 RTDF 的强引用路径。
+
+注入接口保持最小：
+
+```rust
+let harness = NormaHarness::new();
+let registration = harness.registration_sender();
+let messages = harness.message_sender();
+
+let resident = Arc::new(MyResident::new(
+    registration.clone(),
+    messages,
+));
+
+let receipt = registration.register(resident).await?;
+```
+
+注册请求携带真实的 `Arc<dyn Resident>`。RDF 直接从该实例读取描述、邮箱和 Gate。同名审核通过后，RDF 分配不可复用的 `ResidentInstanceId`，把实例写入 ResidentStore，并在同一条注册命令中提交注册记录。被拒绝的实例不会被 Store 保留。
+
+RDF 的注册记录直接保存消息传递所需的邮箱和 Gate 地址。RTDF 从 RDF 读取这些端点，不访问 ResidentStore，也不调用 Resident 的业务方法。
+
+### 注册与退出约定
+
+Resident 在公开端点准备完成时主动注册。注销是它最后一次框架操作：
+
+```text
+使用两个通道句柄构造 Resident
+→ Resident 提交自己完成注册
+→ Resident 正常工作
+→ Resident 停止接收新工作
+→ Resident 排空或取消自己拥有的工作
+→ Resident 主动注销
+→ RDF 同时删除注册记录和 Store 所有权
+→ Resident 执行返回
+```
+
+RDF 注销时不会等待 `Resident::run` 结束，否则会形成 Resident 等待 RDF、RDF 又等待 Resident 的执行死锁。Resident 发送 `unregister` 就是在声明它已经到达自己的安全退出边界。
+
+已经从 RDF 复制了端点句柄的 RTDF 投递可能与注销并发结束。具体 Resident 必须在自己的退出边界中关闭或保护邮箱和 Gate。
+
+### 明确不做
+
+Norma Harness 不提供 Session、Thread、Turn、工作流执行、上下文压缩、状态机、检查点、持久化、重试策略、取消策略、回滚、恢复、durable execution、Ledger、WASM Host、热更新激活、版本回退或业务结果解释。
+
+完整约束见[架构说明](docs/ARCHITECTURE.md)。

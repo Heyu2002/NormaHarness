@@ -1,142 +1,222 @@
-# Village Harness 架构
+# Norma Harness 架构边界
 
-本文记录当前 Rust 实现已经确定的架构语义。它是实现约束，不是对未来产品模块的预先拆分。
-
-## 1. 村庄、Resident 与 Layout
-
-Village Harness 将每个 AgentThread 视为一座独立村庄，系统模块是可插拔的 Resident，Gate 是数据路径上的关卡。Resident 之间不得直接持有彼此的实现引用；所有运行数据均通过 Layout 传输。
-
-Layout 包含两个数据流容器：
-
-- **RDF（Registration Data Flow）**：接受 WASM Resident artifact、受信任 Native Resident registration 与 Gate Factory 的成组注册请求，管理暴露信息，在用户 Turn 开始时完成发现并发布不可变注册快照。
-- **RTDF（Runtime Data Flow）**：为每个 AgentThread 建立独立 Resident 实例、私有信箱与 Gate 实例集，串行执行同一 Thread 的 Turn，传输 Resident 产生的数据，执行 Gate，并提交状态迁移。
-
-RDF 保存经过验证和编译的 WASM 模块或 Native Resident Factory，不保存供所有对话共享的 Resident 实例。RTDF 中的 WASM Store、Native Resident 与 Gate 实例都属于单个 AgentThread。
-
-RDF 是 Layout 控制面，不作为 capability 注入 Resident。内部 `RegistrationSnapshot` 只交给 RTDF；RTDF 从当前固定快照生成 `ResidentDirectorySnapshot` 纯数据投影，随 `ResidentInvocation` 交给 Resident。
-
-## 2. 注册、发现与实例化
-
-WASM Resident 以 `ResidentArtifact` 暴露自身，其中只有 `ResidentProfile`、WASM bytes 和 `ResidentLimits`，不含活的 Rust 对象、闭包、Store 或其他 Resident 引用。RDF 编译模块并拒绝所有 import。
-
-受信任的进程内业务可以实现公开的 Rust `Resident` trait，并通过 `NativeResidentRegistration` 提交 Factory。Layout 为每个 AgentThread 单独调用 Factory；RDF 不保存或共享 Factory 产生的实例。Native `ResidentContext` 只有本次调用的数据以及暂存 `Emission` / `StateEvent` 的方法，不包含 RDF、RTDF、mailbox 或其他 Resident 实例。Gate 是受信任的原生内核扩展，仍使用 `GateFactory`。
-
-一次相关变更通过同一个 `RegistrationBatch` 提交。RDF 为每个 Upsert 分配新的 `ExposureId`；它表示一次暴露事件，不是业务版本号。
-
-每个用户 Turn 开始时，RTDF 调用 RDF 执行发现：
-
-1. RDF 依次处理待发现的注册批次。
-2. 同一批次内的 Resident 与 Gate 变更全部通过校验后，才产生新的不可变 `RegistrationSnapshot`。
-3. 每个 AgentThread 在自己的 Turn 边界，根据最新快照为变化的 Resident 创建独立 WASM Store 或 Native Resident 实例与私有信箱，并创建变化的 Gate 候选实例。
-4. 全部候选实例初始化成功后，Thread 的 RuntimeSet 才原子切换。
-5. 任意候选初始化失败时，整批候选被关闭，Thread 继续使用完整的旧 RuntimeSet。
-
-当前正在运行的 Turn 固定使用启动时取得的 RuntimeSet。热更新不会改变执行到一半的数据流；下一 Turn 才会尝试应用新快照。
-
-## 3. AgentThread 生命周期
-
-同一 AgentThread 的 Turn 严格串行。不同 AgentThread 拥有不同的 Resident、Gate 和 `AgentThreadContext` 实例，可以并发运行。
-
-Thread 长时间空闲后可以进入硬休眠：
-
-- 等待当前 Turn 完成；
-- 关闭 Resident/Gate 实例；
-- 移除 AgentThreadContext；
-- 释放 RTDF 中的 Thread 连接。
-
-相同 Thread 标识再次进入时会按 RDF 最新快照重新建立 Context 和所有运行实例。当前内核不承诺跨硬休眠恢复运行状态；需要恢复时，应由未来的恢复协议显式提供数据，而不是让 Layout 无限保留内存对象。
-
-## 4. 数据流与路径决定权
-
-RTDF 将 `FlowPacket` 和当前 Context 的数据副本组成 `ResidentInvocation`，通过私有信箱投递。WASM Driver 使用 `ResidentResponse` ABI 解码输出；Native Driver 创建受限 `ResidentContext` 并调用用户的 `Resident::handle`。两条路径最终都只能向 RTDF 交回 `ResidentEffect`，其中可以包含：
-
-- 零个或多个 `Emission`；
-- 零个或多个 `StateEvent`。
-
-每个 Emission 由 Resident 自己指定目标 Resident ID，或返回调用方。ID 只是地址，不是实体引用。RTDF 不替 Resident 决定下一跳，因此允许前进、返回、自循环和跨 Resident 循环。RTDF 为新包生成 message ID、保留 correlation 并推进 hop；框架不维护或验证发送者身份。
-
-Resident 通过 `ResidentContextSnapshot.directory` 获知当前快照内的居民。目录条目只包含：
-
-- `ResidentKey` 门牌；
-- 接受的 `MessageKind`；
-- `provided_capabilities` 公开能力。
-
-Resident 可以按门牌查找，也可以使用 `providers(capability)` 按能力发现目标。目录的 `snapshot_id` 与本 Turn 固定的 RuntimeSet 一致。内部 `ExposureId`、`CompiledResident`、WASM Store、`ResidentMessenger`、Gate 和 Factory 不属于目录协议，不能被投影或序列化给 Resident。
-
-为了让错误实现不会无限占用执行器，Turn 使用可配置的报文数和单报文 Hop 上限。这些限制约束运行资源，不定义合法业务路径。
-
-## 5. Gate
-
-Resident 生命周期先于 Gate 独立定义。一次有效投递固定经过：
+Norma Harness 只提供两个数据流：RDF 处理注册，RTDF 处理 Resident 之间的一跳消息。Resident 自己控制业务状态和生命周期。
 
 ```text
-BeforeReceive
-    → Execute
-    → AfterExecute
-    → BeforeCommit
-    → Commit
+NormaHarness
+├── RDF
+│   ├── ResidentStore
+│   └── RegistrationDirectory
+└── RTDF ── reads ──▶ RegistrationDirectory
 ```
 
-消息契约不接受、Resident 执行失败或状态提交失败时进入 `OnFailure`，并通过 `ResidentFailureStage` 标明 `BeforeReceive`、`Execute` 或 `Commit`。Gate 只是能够挂载到这些 Hook 的一种受信任组件，生命周期本身不依赖 Gate。
+`NormaHarness` 是组合根，只负责创建数据流并提供注入端口，不保存具体 Resident 实例，也不解释 Resident 的内部状态。
 
-Gate 与 Resident 使用同一 RDF 注册和 AgentThread 激活时机。每个 `GateProfile` 必须显式提供一个或多个 `GateHookBinding`：
+## 1. 所有权图
+
+框架内部的强所有权只有以下方向：
 
 ```text
-(ResidentKey, ResidentHookPoint)
+NormaHarness
+├── Arc<Rdf>
+│     └── ResidentStore
+│           └── Arc<dyn Resident>
+└── RtdfCore
+      └── Arc<Rdf>
 ```
 
-RTDF 在激活时把 Gate 编译为按居民和 Hook 点索引的 chain。进入 B 只运行 B 的 `BeforeReceive` chain；A 执行完成只运行 A 的 `AfterExecute` 和 `BeforeCommit` chain。Gate 不再全局遍历，也不能看到未挂载居民的数据。
+Resident 可以保存两个可克隆端口：
 
-Gate 可以清洗或丢弃数据，也可以处理异常并重定向数据流。Gate 实例同样属于单个 AgentThread，不在对话间共享可变状态。
+```text
+Resident
+├── RegistrationSender ──▶ registration channel
+└── MessageSender      ──▶ route channel
+```
 
-`BeforeReceive` 只能继续并改写消息、丢弃或显式重定向；correlation 和 hop 仍由 RTDF 控制。`AfterExecute` 与 `BeforeCommit` 接收完整 `ResidentEffect`，可以原子检查 Emission 和 StateEvent。`OnFailure` 可以传播、丢弃或重定向失败。
+Sender 只持有通道发送端，不持有 `Arc<Rdf>`、`Arc<Rtdf>`、`Arc<ResidentStore>` 或 `Arc<NormaHarness>`。RDF 和 RTDF 的命令循环只持有核心对象的 `Weak`，而且核心对象不保存捕获自身的 `JoinHandle`。
 
-RDF 拒绝没有任何 Hook 的 Gate，也拒绝挂载到不存在 Resident 的 Gate。删除 Resident 时，相关 Gate 必须在同一注册批次中删除或重新挂载。
+因此不存在以下强引用环：
 
-## 6. ToolResident
+```text
+RDF → ResidentStore → Resident → RDF
+RDF → ResidentStore → Resident → RTDF → RDF
+core → JoinHandle → task → core
+Resident → JoinHandle → task → Resident
+```
 
-`ToolResident` 是一个受信任的 Native Resident，而不是 RDF 中的第二套注册系统。用户通过 `ToolResident::builder` 配置 Tool Factory；每个 AgentThread 激活时都会得到自己的 ToolResident 与 Tool 实例。
+具体 Resident 不得自行把 RDF、RTDF、ResidentStore 或整个 `NormaHarness` 包装进 `Arc` 后保存。框架提供 Sender，就是为了避免注入这些核心对象。
 
-RDF 的类型系统、索引与校验逻辑只认识 ToolResident 的 `ResidentProfile`，其中声明 `tools.list`、`tools.invoke` 与 `tools.cancel` 三类居民级消息；它没有单 Tool 的类型、索引或注册入口。Tool 定义会被封装在不透明的 Native Resident Factory 中并由注册快照保活，但 RDF 无法枚举或解释它们。单个 `ToolKey`、Tool schema、Native handler 或 MCP client 都不会被投影到 `ResidentDirectorySnapshot` 或进入 Gate 索引。动态 MCP 发现也应更新 ToolResident 自己的 Catalog，而不是修改 RDF。
+## 2. 模块依赖方向
 
-调用方通过 RTDF 发送纯数据请求。由于框架不维护消息发送者身份，请求显式携带 `reply_to: FlowTarget`；它是业务回信地址，不是来源证明。ToolResident 返回 `tools.catalog` 或带 `call_id` 的 `tools.result`。
+```text
+id / message / mailbox / gate
+               ▲
+               │
+            resident
+               ▲
+               │
+        resident_store
+               ▲
+               │
+              rdf ◀── rtdf
+               ▲       ▲
+               └── application
+```
 
-Gate 仍只按 `(ResidentKey, ResidentHookPoint)` 挂载，因此挂到 ToolResident 的 Gate 自然覆盖其全部 list/invoke/cancel 消息。内核不提供单 Tool Gate。参数清洗、工具特定校验和业务错误属于 `Tool::invoke`；工具业务错误编码成正常 `ToolResult::Error`，不进入 Resident `OnFailure`。
+`Resident` trait 不引用 RDF、RTDF 或应用层。RDF 只依赖抽象的 `dyn Resident`，不依赖任何具体 Resident 实现。具体实现通过公开的 Sender 与数据流通信，因此不会产生模块反向依赖。
 
-普通 Resident 没有强制 Tool 字段或 Tool 注册接口，可以在不存在任何 ToolResident 时独立运行。只有需要共享工具的业务或 AgentLoop 才保存 ToolResident 的 `ResidentKey` 并通过 RTDF 发消息。
+## 3. 最小 Resident 接口
 
-当前 mailbox 串行执行一次 Resident delivery。`tools.cancel` 只为管理后台工作的 Tool 提供 best-effort hook，不能中断正在占用同一 ToolResident mailbox 的同步 `invoke`。真正的抢占式取消需要未来的后台完成事件与 RTDF 唤醒协议，不能由当前接口虚假承诺。
+框架只读取注册和路由所需的公开端点：
 
-当前 Native Driver 也没有内核级执行超时、panic containment 或自动重启 supervisor。一个永不返回的 Native Resident/Tool 会阻塞它的 mailbox；由于同一 AgentThread 的 Turn 串行，还会阻止该 Thread 的后续 Turn 与硬休眠。Native 业务必须自行设置下游超时并避免 panic；要把这项责任收回内核，需要后续增加明确的 deadline、取消传播与实例重建策略。
+```rust
+pub trait Resident: Send + Sync + 'static {
+    fn descriptor(&self) -> ResidentDescriptor;
+    fn mailbox(&self) -> MailboxAddress;
+    fn outbound_gate(&self) -> Option<Arc<dyn Gate>>;
+    fn inbound_gate(&self) -> Option<Arc<dyn Gate>>;
+}
+```
 
-## 7. 状态机
+接口不包含 `start`、`stop`、`retry`、`rollback`、状态机、快照或更新方法。具体 Resident 可以采用任何内部执行模型。
 
-状态机定义由 `ResidentProfile` 提供，经 RDF 统一注册和校验。实际状态实例内化在 `AgentThreadContext` 中。
+`ResidentDescriptor`、邮箱和 Gate 从注册成功到注销完成必须代表同一个公开身份。若这些端点需要变化，Resident 应完成旧实例的退出，再注册新实例。
 
-Resident 不直接写入状态，也不指定最终状态。它只产生 `StateEvent`；RTDF 根据已注册定义计算迁移，并在全部事件均有效时原子提交。Resident 只能产生自己拥有的状态机事件。
+## 4. RDF：注册与实例所有权
 
-热更新时，新的状态机定义必须接受 AgentThreadContext 中的当前状态。若不能接受，该 Thread 的整批热更新失败并继续使用旧 RuntimeSet。当前内核不提供通用回退语义；需要回流或引导的 Resident 应在自己的状态机定义中明确表达事件和迁移。
+应用在构造具体 Resident 时注入 `RegistrationSender`。Resident 的公开端点准备完成后主动提交真实实例：
 
-## 8. 隔离保证与信任边界
+```rust
+let receipt = registration_sender.register(self_arc).await?;
+```
 
-WASM Resident 执行路径同时使用以下机制：
+注册命令携带 `Arc<dyn Resident>`，不是调用方拼装的描述副本。RDF 按以下顺序执行：
 
-1. 协议 crate 不公开宿主对象；WASM 注册入口只接受数据型 `ResidentArtifact`。
-2. 每个 Resident 实例由独立 `wasmi::Store` 承载；Store 只被一个私有 mailbox task 持有，RTDF 只有 `ResidentMessenger` 的 crate-private sender。
-3. Resident 模块必须零 import。宿主不链接 WASI、文件、网络、时钟、Layout callback 或 peer lookup 能力。
-4. 输入和输出只能是序列化的 `ResidentInvocation` / `ResidentResponse`；Context 和 Directory 都是一次性数据快照，不是 capability。
-5. 内存、输入、输出、fuel 和 mailbox 容量均受限。硬休眠或热替换会关闭信箱并丢弃 Store。
+1. 从实例读取描述、邮箱、传出 Gate 和传入 Gate；
+2. 判断该实例是否已经注册；
+3. 分配进程内不可复用的 `ResidentInstanceId`；
+4. 在唯一注册目录中检查 Resident 名称；
+5. 将实例写入私有 ResidentStore；
+6. 将名称、实例 ID、能力、邮箱和 Gate 写入注册记录；
+7. 释放注册目录写锁；
+8. 通过已有注册记录中的邮箱广播 `ResidentRegistered`；
+9. 返回实例 ID、已有 Resident 快照和通知失败列表。
 
-因此，在 Village Harness 的 WASM 执行路径内，Resident 没有可用于获得或保存另一个 Resident 实体的能力。两个 Resident 之间唯一受支持的通信是“返回 Emission → RTDF 排队 → 目标 mailbox 接收”。
+Store 插入和注册记录提交位于同一个 RDF 命令中。注册失败的实例不会留在 Store。同名检查只在 RDF 进行，因此不存在 Store 与 RDF 各自判断名称的双重权威。
 
-Native Resident 是为了框架内置模块和可信业务代码提供的易用路径。框架不向 `Resident::handle` 注入 peer instance、RDF、RTDF 或 mailbox，并保证每个 AgentThread 由 Factory 创建独立实例；但同进程 Rust 代码仍可能自行使用全局变量、网络或捕获的宿主对象。因此 Native 路径是 API capability boundary，不是针对恶意代码的安全沙箱。需要敌对代码隔离时必须使用零 import WASM 或未来的独立进程 Driver。
+广播直接使用 RDF 注册记录里的 `MailboxAddress`。RDF 不需要通过 Store 找回 Resident，也不经过 RTDF，因此没有 `RDF → RTDF → RDF` 依赖。
 
-这项保证不把受信任的原生 Gate、宿主应用本身或未来显式引入的 sidecar 算作不可信 Resident。若将来向 WASM 链接文件、网络、共享内存或通用 host-call，必须将其视为 capability，并重新审计隔离边界；不能仍宣称零通道保证。
+通知失败会进入 `RegistrationReceipt::notice_failures`，不会自动注销任何 Resident。
 
-## 9. Crate 边界
+## 5. ResidentStore：RDF 的私有所有权区
 
-`village-harness-protocol` 只包含稳定契约：标识符、数据包、Resident 的纯数据调用/响应、Gate 与状态机。它不依赖 WASM Store、RTDF 的内部存储或调度实现。
+ResidentStore 只完成三件事：
 
-`village-harness` 实现公开的 Native `Resident` 业务接口、内置 ToolResident、Resident artifact 编译、WASM 隔离宿主、私有信箱、RDF、RTDF、AgentThreadContext、成组注册事务、按 Thread 激活、数据传输和硬休眠。
+1. 分配单调递增且不复用的实例 ID；
+2. 按实例 ID 强持有注册成功的 `Arc<dyn Resident>`；
+3. 在注销时删除该强引用。
 
-Native Resident 与 Gate 使用受信任 Rust trait；WASM Resident 的跨编译产物边界由版本化 ABI 定义，详见 `RESIDENT_ABI.md`。未来若增加进程隔离载体，应保持相同的 capability 边界，不得重新暴露原生 Resident 实例。
+ResidentStore 不公开给应用和 Resident，不检查名称，不保存注册状态，不路由消息，也不调用业务生命周期方法。
+
+RDF 注册目录和 ResidentStore 维持以下不变量：
+
+```text
+存在 RegistrationRecord(instance_id)
+⇔
+ResidentStore 中存在相同 instance_id 的实例
+```
+
+## 6. RTDF：一跳消息传递
+
+具体 Resident 只保存 `MessageSender`。发送请求为：
+
+```text
+send(source_instance_id, target_name, message)
+```
+
+RTDF 执行固定的一跳流程：
+
+```text
+RDF 校验源实例并解析目标名称
+→ RDF 返回源传出 Gate、目标传入 Gate和目标邮箱
+→ 源传出 Gate
+→ 目标传入 Gate
+→ 目标邮箱
+```
+
+RTDF 不访问 ResidentStore。一次发送开始时，它从 RDF 注册记录复制必要端点，随即释放目录读锁，再执行异步 Gate。Gate 或邮箱失败只终止本次发送并返回错误，不修改注册状态。
+
+消息通道发送端不拥有 `RtdfCore`。RTDF 后台循环只持有 `Weak<RtdfCore>`，所以 Store 内 Resident 即使保存 `MessageSender`，也不会通过它返回 RTDF 或 RDF。
+
+## 7. 实例身份与同名复用
+
+`ResidentInstanceId` 标识一次具体注册，进程生命周期内不复用：
+
+```text
+旧实例：InstanceId 17，名称 llm
+新实例：InstanceId 42，名称 llm
+```
+
+旧实例注销后，新实例可以注册相同名称。RTDF 会拒绝实例 17 继续作为发送源，因为 RDF 已删除 `by_instance[17]`。
+
+实例 ID 不是跨进程安全凭证。它用于区分实例代次，框架仍然信任进程内 Resident。
+
+## 8. 注销是 Resident 的最后一个框架动作
+
+合法顺序为：
+
+```text
+应用构造 Resident 并注入两个 Sender
+→ Resident 主动注册自己
+→ Resident 正常处理工作
+→ Resident 停止接受新工作
+→ Resident 排空或取消自己拥有的工作
+→ Resident 主动注销
+→ RDF 删除注册记录和 Store 强引用
+→ Resident 的执行函数返回
+```
+
+RDF 处理注销时不会等待 Resident 的执行函数返回。若 RDF 等待执行结束，而执行函数正在等待 `unregister` 的响应，就会形成执行等待环。
+
+Store 删除强引用不等于强制销毁对象。调用注销的执行栈或应用自己的引用可以让对象继续存在，但它已经没有 RDF 注册身份，不能再通过旧实例 ID 发送消息。
+
+一次已经从 RDF 复制端点的 RTDF 投递可能与注销并发结束。框架不会替 Resident 判断这个业务边界；具体 Resident 应在注销前关闭或保护邮箱和 Gate，使迟到调用安全失败或安全结束。
+
+## 9. 初始化与后台循环
+
+`NormaHarness::new()` 必须在 Tokio runtime 内调用。它启动两个命令循环：
+
+- RDF 循环处理注册和注销；
+- RTDF 循环接收一跳发送，并把每次投递交给独立任务，避免 Gate 内部再次发送消息时等待同一个串行循环。
+
+串行 RDF 命令保证同名检查与提交之间没有并发竞态。命令处理完成后，循环立即释放临时升级得到的核心 `Arc`。RTDF 投递任务只在本次消息处理期间持有核心对象，RTDF 不保存其任务句柄。核心销毁时通过独立 shutdown 通知结束循环，即使外部仍误留了 Sender，也不会让后台循环永久等待。
+
+## 10. 明确删除和禁止回流的能力
+
+当前架构不包含：
+
+- Session、Thread、Turn 和上下文压缩；
+- Runtime、Resident Host、Factory 和 WASM ABI；
+- 版本化 Registry、热更新激活和历史回退；
+- 通用状态机、检查点、快照和状态持久化；
+- Ledger、Journal、恢复协调和 durable execution；
+- 框架级重试、取消、补偿或回滚；
+- 多阶段 Gate 生命周期和业务 Effect。
+
+需要理解业务状态的能力属于具体 Resident，不得放入 ResidentStore、RDF 或 RTDF。
+
+## 11. 代码结构
+
+```text
+crates/norma-harness/src/
+├── application.rs     # 组合根与两个注入端口
+├── resident_store.rs  # RDF 私有实例所有权
+├── resident.rs        # 最小 Resident 接口和注册事件
+├── rdf.rs             # 注册命令、目录、广播和 RegistrationSender
+├── rtdf.rs            # 一跳消息管道和 MessageSender
+├── gate.rs            # 传入与传出边界
+├── mailbox.rs         # 入队地址
+├── message.rs         # 传输消息
+├── id.rs              # 名称和实例 ID
+└── error.rs           # 边界错误
+```
