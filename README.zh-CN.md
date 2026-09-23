@@ -288,21 +288,6 @@ RDF 在注销时不会等待 Resident 的执行函数结束，否则容易形成
 
 RDF 串行处理注册命令。RTDF 独立调度每次投递，因此 Gate 可以等待异步操作，也可以再次发起消息，不会阻塞一个全局串行投递循环。即使外部仍保留 Sender 克隆，释放 `NormaHarness` 也会关闭框架核心。
 
-## 明确不做
-
-Norma Harness 不提供：
-
-- Session、Thread、Turn 或上下文压缩；
-- 工作流编排或业务结果解释；
-- 通用状态机；
-- 检查点、持久化、Ledger 或 durable execution；
-- 框架级重试、取消、补偿、回退或回滚策略；
-- Resident Factory、Resident Host、WASM Host 或 ABI；
-- 热更新激活、版本化发布或历史版本回退；
-- 多跳路由、远程传输或网络服务发现。
-
-这些能力可以由具体 Resident 或独立上层模块实现，不需要扩张 RDF 与 RTDF 的边界。
-
 ## Resident 实现包
 
 [`norma-residents`](./residents/README.md) 包统一存放具体

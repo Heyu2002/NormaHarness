@@ -288,21 +288,6 @@ A delivery that already copied its Gate and mailbox handles may finish concurren
 
 RDF processes registration commands serially. RTDF dispatches deliveries independently, so a Gate may await or initiate another send without blocking one global delivery loop. Dropping `NormaHarness` shuts down the framework cores even if cloned Sender handles still exist.
 
-## Deliberate limits
-
-Norma Harness does not provide:
-
-- Session, Thread, Turn, or context compression;
-- workflow orchestration or business result interpretation;
-- a generic state machine;
-- checkpoints, persistence, Ledger, or durable execution;
-- framework retry, cancellation, compensation, fallback, or rollback policies;
-- Resident factories, a Resident Host, WASM hosting, or an ABI;
-- hot-update activation, versioned rollout, or historical version rollback;
-- multi-hop routing, remote transport, or network discovery.
-
-Those capabilities can be implemented by Residents or by separate upper layers without expanding RDF or RTDF.
-
 ## Resident implementations
 
 The [`norma-residents`](./residents/README.md) package holds
