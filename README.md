@@ -303,10 +303,76 @@ Norma Harness does not provide:
 
 Those capabilities can be implemented by Residents or by separate upper layers without expanding RDF or RTDF.
 
+## Resident implementations
+
+The [`norma-residents`](./residents/README.md) package holds
+concrete Resident implementations. Its `codex` module runs the locally
+authenticated Codex CLI as a Resident. It uses
+`codex app-server` over stdio, defaults to `gpt-6-luna`, and returns results
+through RTDF. It keeps Codex thread state, execution, and shutdown inside the
+concrete Resident rather than adding them to RDF or RTDF.
+
+```console
+cargo run -p norma-residents --example roundtrip -- . "Summarize this repository in one sentence."
+```
+
+## Resident chat room
+
+The `norma-web` package serves a local chat website. It discovers Residents
+advertising the `llm` capability through RDF and lists online models directly
+in the sidebar. Clicking a model opens or reuses its one-to-one room. Group
+creation selects at least two different online Residents. Without a mention,
+members contribute in sequence and the first member synthesizes the result.
+With `@member` or `@{member}`, only the named group members reply. Each Resident
+keeps a separate provider thread for each room and receives messages from its
+other ordinary rooms; incognito rooms use only their own context. Requests and replies travel through
+RTDF, while the `residents::chat` Resident owns room state.
+Each `llm.turn.request` includes an `origin` with `solo` or `group` kind,
+room ID, and room name. The LLM inbound Gate validates this origin and stamps
+`source_resident` from RTDF. Codex receives a JSON context envelope with
+`source`, `new_events`, and `current_request`. A separate `tools.rooms`
+Resident provides the `list_group_members` dynamic tool through Codex
+app-server. It queries `chat.rooms` over RTDF and is limited to the current
+group. Codex dynamic tools are experimental.
+
+Sign in with `codex login`, then run from the repository root:
+
+```console
+cargo run -p norma-web
+```
+
+Open <http://127.0.0.1:3000> locally, or use the host's IPv4 address and port
+from another device on the same LAN. The app starts one Codex Resident, using
+`gpt-6-luna` with the local Codex reasoning effort in read-only mode. The `CodexResident` implementation also allows
+only one active instance per process. `NORMA_CODEX_CWD` sets the working directory, and `NORMA_WEB_BIND` sets
+the listen address. Set `NORMA_CODEX_EFFORT` to change reasoning effort, or
+`NORMA_CODEX_WORKSPACE_WRITE=1` to allow edits. The
+default listener binds all IPv4 interfaces. Set `NORMA_WEB_BIND=127.0.0.1:3000`
+to limit access to this machine. There is no user authentication yet, so expose
+the site only on a trusted network. Ordinary rooms, messages, attachments, and
+provider thread mappings are saved locally under `%LOCALAPPDATA%\NormaHarness` on Windows,
+or the XDG/HOME data directory elsewhere. Set `NORMA_DATA_DIR` to override it.
+Rooms retain their IDs after page close, idle sleep, and process restart. The idle threshold
+is `NORMA_THREAD_IDLE_SECS` (default 1800). The sidebar supports recent and archived chats.
+If a provider thread cannot resume, the Resident rebuilds context from saved messages.
+Long-term memory is off by default and can be enabled in the sidebar. It extracts facts
+only after room sleep (following any configured end hook) or provider context compaction.
+Facts persist on disk, frequent mentions enter cache, and sustained cache facts enter hot memory.
+Incognito rooms are excluded from Norma's chat and memory files, with attachments in a temporary
+directory. The model provider and operating system may retain processing records. Because the
+website has no user authentication, the memory setting applies to this local service instance.
+With one online
+model, solo chat works; group creation becomes available when another distinct
+LLM Resident is registered.
+
+Additional implementations can join by advertising `llm` and handling the
+[`llm.turn.request` / `llm.turn.result` contract](./residents/src/llm.rs).
+Codex also retains the older `codex.turn.*` protocol.
+
 ## Repository layout
 
 ```text
-crates/norma-harness/src/
+src/
 ├── application.rs     # composition root and injected ports
 ├── rdf.rs             # registration commands and directory
 ├── resident_store.rs  # strong ownership of registered instances

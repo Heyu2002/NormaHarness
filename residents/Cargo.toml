@@ -1,15 +1,17 @@
 [package]
-name = "norma-harness"
-description = "Resident registration and message routing for Norma Harness"
+name = "norma-residents"
+description = "Concrete Resident implementations for Norma Harness"
 edition.workspace = true
 license.workspace = true
-readme.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["gif", "png"] }
+norma-harness = { path = ".." }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

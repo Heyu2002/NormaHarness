@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111b2f">
+  <title>Norma · Resident 聊天室</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><div class="brand-mark">N</div><div><strong>Norma</strong><small>HARNESS / CHAT</small></div></div>
+      <button class="new-room" id="new-room"><span class="plus">＋</span> 创建群聊</button>
+      <button class="new-room quiet-room" id="new-incognito"><span class="plus">◌</span> 无痕对话</button>
+      <div class="section-label">在线模型 <span id="model-count">0</span></div>
+      <nav class="room-list model-list" id="model-list" aria-label="在线模型"></nav>
+      <div class="section-label group-label">最近会话 <span id="group-count">0</span></div>
+      <nav class="room-list group-list" id="group-list" aria-label="最近会话"></nav>
+      <div class="section-label archive-label">归档 <span id="archive-count">0</span></div>
+      <nav class="room-list archive-list" id="archive-list" aria-label="已归档会话"></nav>
+      <label class="memory-switch"><span><strong>长期记忆</strong><small>开启后仅在休眠或压缩时提取</small></span><input id="memory-enabled" type="checkbox" role="switch"></label>
+      <div class="sidebar-footer"><span class="live-dot"></span><span id="resident-count">正在连接 Resident…</span></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="menu-toggle" id="menu-toggle" aria-label="打开会话列表">☰</button>
+        <div class="topbar-title"><div class="eyebrow">RESIDENT WORKSPACE</div><h1 id="room-title">开始一次对话</h1></div>
+        <div class="topbar-right"><span class="mode-pill" id="mode-pill">选择在线模型</span><button class="archive-toggle hidden" id="archive-room" type="button">归档</button><div class="avatar">N</div></div>
+      </header>
+
+      <section class="welcome" id="welcome">
+        <div class="welcome-orb"><span>✳</span></div>
+        <div class="welcome-kicker">YOUR AGENT WORKSPACE</div>
+        <h2>让想法，在对话中推进。</h2>
+        <p>点击左侧在线模型，直接开始单聊。需要协作时，创建群聊并邀请不同的 LLM Resident 接力分析、相互补充。</p>
+        <button class="primary-button" id="welcome-create">与在线模型对话 <span>↗</span></button>
+        <div class="welcome-capabilities"><span><i class="cap-dot blue"></i> 单聊 · 专注执行</span><span><i class="cap-dot amber"></i> 群聊 · 多 Agent 协作</span></div>
+      </section>
+
+      <section class="conversation hidden" id="conversation" aria-label="聊天内容">
+        <div class="messages" id="messages" aria-live="polite"></div>
+        <div class="working hidden" id="working"><span class="typing"><i></i><i></i><i></i></span><span id="working-label">Resident 正在处理…</span></div>
+      </section>
+
+        <div class="composer-wrap hidden" id="composer-wrap"><form class="composer" id="composer"><textarea id="message-input" placeholder="发送消息给 Resident…" rows="1" maxlength="20000" aria-label="消息内容"></textarea><div class="pending-files" id="pending-files"></div><div class="composer-bottom"><div class="composer-actions"><label class="attach-button" for="file-input" title="添加图片或 GIF">＋ 图片 / GIF</label><input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden><span>Enter 发送 · Shift + Enter 换行</span></div><button type="submit" id="send-button" aria-label="发送消息">↑</button></div></form><p class="composer-note" id="composer-note">Resident 可能出错。重要结论请核实。</p></div>
+      <div class="toast hidden" id="toast" role="alert"></div>
+    </main>
+  </div>
+
+  <div class="modal-backdrop hidden" id="modal-backdrop"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-header"><div><div class="eyebrow">NEW GROUP</div><h2 id="modal-title">创建群聊</h2></div><button class="close-button" id="close-modal" aria-label="关闭">×</button></div>
+    <p class="modal-description">从在线模型中选择至少两个不同的 LLM Resident，组成协作群聊。</p>
+    <form id="create-form"><label class="field-label" for="new-room-name">会话名称</label><input id="new-room-name" maxlength="80" placeholder="例如：讨论新功能方案" required>
+      <div class="field-row"><span class="field-label">选择 LLM Resident</span><span id="selected-count">已选 0 个</span></div>
+      <div class="resident-options" id="resident-options"></div>
+      <label class="private-option"><input id="group-incognito" type="checkbox"> 无痕群聊 <small>不保存本地历史，不提取长期记忆</small></label>
+      <div class="modal-footer"><span id="mode-preview">至少选择 2 个模型</span><button class="primary-button" id="create-button" type="submit">创建群聊 <span>→</span></button></div>
+    </form>
+  </div></div>
+</body>
+</html>

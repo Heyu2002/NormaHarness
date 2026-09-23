@@ -303,10 +303,71 @@ Norma Harness 不提供：
 
 这些能力可以由具体 Resident 或独立上层模块实现，不需要扩张 RDF 与 RTDF 的边界。
 
+## Resident 实现包
+
+[`norma-residents`](./residents/README.md) 包统一存放具体
+Resident 实现。当前的 `codex` 模块将本机已登录的 Codex CLI 接为 Resident，
+通过 stdio 使用
+`codex app-server`，默认模型为 `gpt-6-luna`，并经 RTDF 返回结果。Codex
+线程状态、执行和退出都由这个具体 Resident 负责，不加入 RDF 或 RTDF。
+
+```console
+cargo run -p norma-residents --example roundtrip -- . "用一句话概括这个仓库。"
+```
+
+## Resident 聊天室
+
+本仓库提供本地网站 `norma-web`。网页从 RDF 查询带 `llm` 能力的 Resident，
+在左栏直接显示在线模型。点击模型会打开或复用它的单聊房间；创建群聊时才选择
+至少两名不同的在线 Resident。群聊未使用 `@成员` 时，成员依次贡献，最后由首位成员汇总；
+使用 `@成员` 或 `@{成员}` 时，只由被提及的群成员回复。同一个 Resident 在私聊和群聊中
+为每个房间维护独立的模型线程，并接收它参与的普通房间消息；无痕房间只接收本房间上下文。
+所有请求与结果都经过 RTDF，房间协调状态由 `residents::chat` Resident 持有。
+聊天室在 `llm.turn.request` 中提供 `origin`：`kind` 为 `solo` 或 `group`，
+并带房间 ID 和名称。LLM 入站 Gate 校验来源，并使用 RTDF 的真实发送者填充
+`source_resident`。Codex 收到的上下文是包含 `source`、`new_events`、
+`current_request` 的 JSON。独立的 `tools.rooms` Resident 提供查询当前群成员的
+工具；Codex 通过 app-server 的实验性 `list_group_members` 动态工具调用它，
+经 RTDF 从 `chat.rooms` 获取成员。私聊不能使用该工具，群聊只能查询自己所在的群。
+
+输入框可选择、粘贴或拖入 PNG、JPEG、WebP 和 GIF，每条消息最多 4 个文件，
+单个文件最多 8 MiB。原始 GIF 在网页中播放并可下载；传给 Codex 的是首帧图片。
+Codex 生成的图片可通过 `publish_media` 动态工具交给服务 Resident 发布为聊天附件，
+app-server 的 `imageGeneration` 图片结果也会进入附件。只回复文件名或路径不会显示图片。
+
+先使用 `codex login` 登录本机 Codex CLI，然后在仓库根目录运行：
+
+```console
+cargo run -p norma-web
+```
+
+本机打开 <http://127.0.0.1:3000>；同一局域网可使用运行电脑的 IPv4 地址与端口访问，
+例如 `http://192.168.2.125:3000`。网站只启动一个 Codex Resident，默认模型为
+`gpt-6-luna`，默认沿用本机 Codex 推理强度，默认只读。`CodexResident` 在同一进程中也只允许一个活动实例。
+可用 `NORMA_CODEX_CWD` 指定工作目录，`NORMA_WEB_BIND` 指定监听地址，
+`NORMA_CODEX_EFFORT` 调整推理强度，
+`NORMA_CODEX_WORKSPACE_WRITE=1` 允许修改工作目录。网站默认监听所有 IPv4 网卡；
+若只允许本机访问，设置 `NORMA_WEB_BIND=127.0.0.1:3000`。目前没有用户认证，
+仅应在可信网络开放。普通房间、消息、图片附件和模型线程映射自动保存在本机，
+默认目录为 Windows 的 `%LOCALAPPDATA%\NormaHarness`（其他系统使用 XDG/HOME 数据目录），
+可用 `NORMA_DATA_DIR` 修改。重启后可在“最近会话”中继续原房间，也可归档和取消归档；
+关闭页面或长时间没有对话会让房间休眠，下一段对话仍使用原房间 ID。
+`NORMA_THREAD_IDLE_SECS` 默认 1800 秒。若旧模型线程无法恢复，Resident 会用本地历史重建上下文。
+“长期记忆”默认关闭；开启后仅在房间休眠（先执行可选的结束钩子）或模型上下文压缩时提取，
+原始事实写入本地文件，短时间重复提及进入 cache，持续存在后进入 hot；hot 一周不提及会退行。
+无痕房间不写入 Norma 的聊天快照和长期记忆；附件使用临时目录，但模型提供方及操作系统仍可能保留处理记录。
+目前没有用户认证，因此记忆开关属于当前本地服务实例，不是独立的多用户设置。只有一个在线模型时，
+可以单聊；接入第二种 LLM Resident 后才可以建群。
+
+其他实现要参与聊天室，需声明 `llm` 能力，并实现
+[`residents/src/llm.rs`](./residents/src/llm.rs) 中的
+`llm.turn.request` / `llm.turn.result` 协议。Codex Resident 同时兼容原有的
+`codex.turn.*` 消息。
+
 ## 仓库结构
 
 ```text
-crates/norma-harness/src/
+src/
 ├── application.rs     # 组合根与注入端口
 ├── rdf.rs             # 注册命令与注册目录
 ├── resident_store.rs  # 注册实例的强所有权

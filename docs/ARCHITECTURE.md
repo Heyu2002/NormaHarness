@@ -208,7 +208,7 @@ Store 删除强引用不等于强制销毁对象。调用注销的执行栈或�
 ## 11. 代码结构
 
 ```text
-crates/norma-harness/src/
+src/
 ├── application.rs     # 组合根与两个注入端口
 ├── resident_store.rs  # RDF 私有实例所有权
 ├── resident.rs        # 最小 Resident 接口和注册事件
@@ -220,3 +220,33 @@ crates/norma-harness/src/
 ├── id.rs              # 名称和实例 ID
 └── error.rs           # 边界错误
 ```
+
+## 12. 框架契约与具体 Resident 实现
+
+工作区把两类代码分成两个包：
+
+```text
+Cargo.toml                       # 仓库根目录就是 norma-harness 包
+src/                             # 框架契约、RDF、RTDF、ResidentStore
+tests/                           # 框架测试
+residents/                       # 具体 Resident 实现包
+├── src/codex/                   # Codex Resident
+├── src/chat/                    # 房间协调 Resident
+├── src/tools/                   # 工具服务 Resident
+└── src/llm.rs                   # LLM 消息契约与入站 Gate
+```
+
+框架中已有的 Resident 共用信息包括：
+
+| 信息 | 所在位置与权威 |
+| --- | --- |
+| 名称和能力 | `ResidentDescriptor`；RDF 保存注册期内的公开快照。 |
+| 本次注册的实例身份 | RDF 分配 `ResidentInstanceId`，通过 `RegistrationReceipt` 返回；注销后不复用。 |
+| 注册通知与路由消息 | `ResidentEvent`、`FlowMessage` 和 `RoutedMessage`。 |
+| 投递端点 | `Mailbox` 与可选的传入、传出 `Gate`；由具体 Resident 提供，RDF 保存注册期内的端点。 |
+| 通信入口 | `RegistrationSender` 与 `MessageSender`；应用构造具体 Resident 时注入。 |
+
+模型配置、Codex 子进程、线程 ID、队列、重试与安全退出等属于具体实现，留在
+`norma-residents::codex`。框架不会给 Resident 设置统一执行基类，也不会替它保存
+业务状态。若多个具体实现出现稳定的重复代码，可以先在 `norma-residents` 内抽取
+共用模块，再判断是否有真正需要进入框架的通用契约。
