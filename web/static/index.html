@@ -13,15 +13,13 @@
     <aside class="sidebar" id="sidebar">
       <div class="brand"><div class="brand-mark">N</div><div><strong>Norma</strong><small>HARNESS / CHAT</small></div></div>
       <button class="new-room" id="new-room"><span class="plus">＋</span> 创建群聊</button>
-      <button class="new-room quiet-room" id="new-incognito"><span class="plus">◌</span> 无痕对话</button>
       <div class="section-label">在线模型 <span id="model-count">0</span></div>
       <nav class="room-list model-list" id="model-list" aria-label="在线模型"></nav>
-      <div class="section-label group-label">最近会话 <span id="group-count">0</span></div>
-      <nav class="room-list group-list" id="group-list" aria-label="最近会话"></nav>
+      <div class="section-label group-label">群聊 <span id="group-count">0</span></div>
+      <nav class="room-list group-list" id="group-list" aria-label="群聊列表"></nav>
       <div class="section-label archive-label">归档 <span id="archive-count">0</span></div>
       <nav class="room-list archive-list" id="archive-list" aria-label="已归档会话"></nav>
-      <label class="memory-switch"><span><strong>长期记忆</strong><small>开启后仅在休眠或压缩时提取</small></span><input id="memory-enabled" type="checkbox" role="switch"></label>
-      <div class="sidebar-footer"><span class="live-dot"></span><span id="resident-count">正在连接 Resident…</span></div>
+      <div class="sidebar-footer"><span class="live-dot"></span><span id="resident-count">正在连接 Resident…</span><button class="settings-button" id="settings-button" type="button" aria-label="设置" title="设置" aria-haspopup="dialog" aria-controls="settings-backdrop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.8 13.5 4.5l2.2.4 2.1-1 2.4 2.4-1 2.1.4 2.2 1.7 1.5-1.7 1.5-.4 2.2 1 2.1-2.4 2.4-2.1-1-2.2.4-1.5 1.7-1.5-1.7-2.2-.4-2.1 1-2.4-2.4 1-2.1-.4-2.2-1.7-1.5 1.7-1.5.4-2.2-1-2.1 2.4-2.4 2.1 1 2.2-.4L12 2.8Z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
     </aside>
 
     <main class="main">
@@ -59,6 +57,11 @@
       <label class="private-option"><input id="group-incognito" type="checkbox"> 无痕群聊 <small>不保存本地历史，不提取长期记忆</small></label>
       <div class="modal-footer"><span id="mode-preview">至少选择 2 个模型</span><button class="primary-button" id="create-button" type="submit">创建群聊 <span>→</span></button></div>
     </form>
+  </div></div>
+  <div class="modal-backdrop hidden" id="settings-backdrop"><div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="modal-header"><div><div class="eyebrow">PREFERENCES</div><h2 id="settings-title">设置</h2></div><button class="close-button" id="close-settings" type="button" aria-label="关闭设置">×</button></div>
+    <p class="modal-description">当前本地服务的偏好设置。</p>
+    <label class="settings-option"><span><strong>长期记忆</strong><small>开启后，仅在会话休眠或上下文压缩时提取记忆。</small></span><input id="memory-enabled" type="checkbox" role="switch"></label>
   </div></div>
 </body>
 </html>

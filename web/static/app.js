@@ -41,32 +41,44 @@ function modelName(model) {
   return model.model === 'gpt-6-luna' ? 'GPT-6 Luna' : model.model;
 }
 
+function addResidentIcon(icon, model) {
+  if (isOpenAiModel(model)) addGptIcon(icon);
+  else icon.textContent = '✳';
+}
+
+function roomModel(room) {
+  return room.members.length === 1
+    ? state.residents.find((model) => model.key === room.members[0])
+    : null;
+}
+
 function renderSidebar() {
   const models = $('model-list');
   models.replaceChildren();
   $('model-count').textContent = String(state.residents.length);
   const activeRoom = state.rooms.find((room) => room.id === state.selected);
   for (const model of state.residents) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = `room-item model-item${activeRoom?.members.length === 1 && activeRoom.members[0] === model.key ? ' active' : ''}`;
-    button.addEventListener('click', () => openSolo(model.key));
-    const icon = document.createElement('span');
-    icon.className = 'room-icon';
-    if (isOpenAiModel(model)) addGptIcon(icon);
-    else icon.textContent = '✳';
-    const copy = document.createElement('span');
-    copy.className = 'room-copy';
-    const title = document.createElement('strong');
-    title.textContent = modelName(model);
-    const sub = document.createElement('small');
-    sub.textContent = `${model.provider} · ${model.key}`;
-    copy.append(title, sub);
-    const online = document.createElement('span');
-    online.className = 'online-indicator';
-    online.title = '在线';
-    button.append(icon, copy, online);
-    models.append(button);
+    for (const incognito of [false, true]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `room-item model-item${incognito ? ' incognito-item' : ''}${activeRoom?.members.length === 1 && activeRoom.members[0] === model.key && activeRoom.incognito === incognito ? ' active' : ''}`;
+      button.addEventListener('click', () => incognito ? openIncognito(model.key) : openSolo(model.key));
+      const icon = document.createElement('span');
+      icon.className = 'room-icon';
+      addResidentIcon(icon, model);
+      const copy = document.createElement('span');
+      copy.className = 'room-copy';
+      const title = document.createElement('strong');
+      title.textContent = incognito ? `${modelName(model)} · 无痕` : modelName(model);
+      const sub = document.createElement('small');
+      sub.textContent = incognito ? '无痕 · 仅当前运行期间' : `${model.provider} · ${model.key} · 有痕`;
+      copy.append(title, sub);
+      const online = document.createElement('span');
+      online.className = 'online-indicator';
+      online.title = '在线';
+      button.append(icon, copy, online);
+      models.append(button);
+    }
   }
   if (!state.residents.length) {
     const empty = document.createElement('div');
@@ -77,7 +89,7 @@ function renderSidebar() {
 
   const groups = $('group-list');
   groups.replaceChildren();
-  const groupRooms = state.rooms.filter((room) => !room.archived);
+  const groupRooms = state.rooms.filter((room) => room.members.length > 1 && !room.archived);
   $('group-count').textContent = String(groupRooms.length);
   for (const room of [...groupRooms].reverse()) {
     const button = document.createElement('button');
@@ -86,13 +98,13 @@ function renderSidebar() {
     button.addEventListener('click', () => selectRoom(room.id));
     const icon = document.createElement('span');
     icon.className = 'room-icon';
-    icon.textContent = room.incognito ? '◌' : room.members.length > 1 ? '◎' : '●';
+    icon.textContent = '◎';
     const copy = document.createElement('span');
     copy.className = 'room-copy';
     const title = document.createElement('strong');
     title.textContent = room.name;
     const sub = document.createElement('small');
-    sub.textContent = room.incognito ? '无痕 · 仅当前运行期间' : `${room.members.length} 个模型 · ${room.messages.length} 条消息`;
+    sub.textContent = room.incognito ? '无痕群聊 · 仅当前运行期间' : `${room.members.length} 个模型 · ${room.messages.length} 条消息`;
     copy.append(title, sub);
     button.append(icon, copy);
     if (room.busy) {
@@ -106,7 +118,7 @@ function renderSidebar() {
   if (!groupRooms.length) {
     const empty = document.createElement('div');
     empty.className = 'sidebar-empty';
-    empty.textContent = '还没有会话';
+    empty.textContent = '还没有群聊';
     groups.append(empty);
   }
 
@@ -121,7 +133,9 @@ function renderSidebar() {
     button.addEventListener('click', () => selectRoom(room.id));
     const icon = document.createElement('span');
     icon.className = 'room-icon';
-    icon.textContent = '▣';
+    const model = roomModel(room);
+    if (model) addResidentIcon(icon, model);
+    else icon.textContent = '▣';
     const copy = document.createElement('span');
     copy.className = 'room-copy';
     const title = document.createElement('strong');
@@ -216,8 +230,8 @@ function updateWorking() {
 
 function renderRoom(room) {
   state.room = room;
-  const soloModel = room.members.length === 1 ? state.residents.find((model) => model.key === room.members[0]) : null;
-  const title = soloModel ? modelName(soloModel) : room.name;
+  const soloModel = roomModel(room);
+  const title = soloModel ? `${modelName(soloModel)}${room.incognito ? ' · 无痕' : ''}` : room.name;
   $('welcome').classList.add('hidden');
   $('conversation').classList.remove('hidden');
   $('composer-wrap').classList.remove('hidden');
@@ -370,7 +384,7 @@ function renderResidentOptions() {
     check.addEventListener('change', updateModePreview);
     const icon = document.createElement('span');
     icon.className = 'resident-option-icon';
-    icon.textContent = '✳';
+    addResidentIcon(icon, resident);
     const copy = document.createElement('span');
     const title = document.createElement('strong');
     title.textContent = modelName(resident);
@@ -389,19 +403,27 @@ function openModal() {
   loadResidents().catch((error) => toast(error.message));
 }
 function closeModal() { $('modal-backdrop').classList.add('hidden'); }
+function openSettings() {
+  $('settings-backdrop').classList.remove('hidden');
+  refreshMemory().catch((error) => toast(error.message));
+  $('close-settings').focus();
+}
+function closeSettings() {
+  $('settings-backdrop').classList.add('hidden');
+  $('settings-button').focus();
+}
 
 $('new-room').addEventListener('click', openModal);
-$('new-incognito').addEventListener('click', () => {
-  if (state.residents[0]) openIncognito(state.residents[0].key);
-  else toast('当前没有在线的 LLM Resident');
-});
+$('settings-button').addEventListener('click', openSettings);
+$('close-settings').addEventListener('click', closeSettings);
+$('settings-backdrop').addEventListener('click', (event) => { if (event.target === $('settings-backdrop')) closeSettings(); });
 $('welcome-create').addEventListener('click', () => {
   if (state.residents[0]) openSolo(state.residents[0].key);
   else toast('当前没有在线的 LLM Resident');
 });
 $('close-modal').addEventListener('click', closeModal);
 $('modal-backdrop').addEventListener('click', (event) => { if (event.target === $('modal-backdrop')) closeModal(); });
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeModal(); });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { closeModal(); if (!$('settings-backdrop').classList.contains('hidden')) closeSettings(); } });
 $('menu-toggle').addEventListener('click', () => $('sidebar').classList.toggle('open'));
 
 $('create-form').addEventListener('submit', async (event) => {

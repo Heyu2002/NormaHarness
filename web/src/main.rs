@@ -246,7 +246,7 @@ async fn incognito_solo_room(
         .cloned()
         .unwrap_or_else(|| key.to_string());
     Ok(Json(
-        state.chat.create_incognito_solo_room(key, name).await?,
+        state.chat.ensure_incognito_solo_room(key, name).await?,
     ))
 }
 

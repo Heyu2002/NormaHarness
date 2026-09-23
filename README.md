@@ -338,9 +338,9 @@ the site only on a trusted network. Ordinary rooms, messages, attachments, and
 provider thread mappings are saved locally under `%LOCALAPPDATA%\NormaHarness` on Windows,
 or the XDG/HOME data directory elsewhere. Set `NORMA_DATA_DIR` to override it.
 Rooms retain their IDs after page close, idle sleep, and process restart. The idle threshold
-is `NORMA_THREAD_IDLE_SECS` (default 1800). The sidebar supports recent and archived chats.
+is `NORMA_THREAD_IDLE_SECS` (default 1800). Each online model has one ordinary-chat entry and one incognito-chat entry; group rooms and archives are listed separately.
 If a provider thread cannot resume, the Resident rebuilds context from saved messages.
-Long-term memory is off by default and can be enabled in the sidebar. It extracts facts
+Long-term memory is off by default and can be enabled in Settings. It extracts facts
 only after room sleep (following any configured end hook) or provider context compaction.
 Facts persist on disk, frequent mentions enter cache, and sustained cache facts enter hot memory.
 Incognito rooms are excluded from Norma's chat and memory files, with attachments in a temporary

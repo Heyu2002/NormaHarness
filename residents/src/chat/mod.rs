@@ -891,12 +891,21 @@ impl ChatResident {
         Ok(room)
     }
 
-    pub async fn create_incognito_solo_room(
+    /// Reuse the one in-memory incognito room for this Resident.
+    pub async fn ensure_incognito_solo_room(
         &self,
         member: ResidentKey,
         name: String,
     ) -> Result<ChatRoom, ChatError> {
         let name = valid_room_name(name)?;
+        let mut rooms = self.rooms.lock().await;
+        if let Some(existing) = rooms.values().find(|state| {
+            state.room.incognito
+                && state.room.members.len() == 1
+                && state.room.members[0] == member.as_str()
+        }) {
+            return Ok(existing.room.clone());
+        }
         let id = self.next_room.fetch_add(1, Ordering::Relaxed);
         let room = ChatRoom {
             id,
@@ -912,7 +921,7 @@ impl ChatResident {
             incognito: true,
         };
         let (updates, _) = broadcast::channel(32);
-        self.rooms.lock().await.insert(
+        rooms.insert(
             id,
             RoomState {
                 room: room.clone(),

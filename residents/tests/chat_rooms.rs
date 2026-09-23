@@ -157,8 +157,12 @@ async fn local_history_survives_sleep_and_incognito_stays_out_of_snapshot()
     assert_eq!(resumed.id, normal.id);
     assert!(!resumed.sleeping);
     assert_eq!(resumed.messages.len(), 4);
-    chat.create_incognito_solo_room(ResidentKey::new("alpha")?, "private".into())
-        .await?;
+    let (first_private, second_private) = tokio::join!(
+        chat.ensure_incognito_solo_room(ResidentKey::new("alpha")?, "private".into()),
+        chat.ensure_incognito_solo_room(ResidentKey::new("alpha")?, "private".into()),
+    );
+    assert_eq!(first_private?.id, second_private?.id);
+    assert_eq!(chat.list_rooms().await.len(), 2);
     let snapshot = ChatStorage::new(path.clone())?.load()?.unwrap();
     assert_eq!(snapshot.rooms.len(), 1);
     assert_eq!(snapshot.rooms[0].messages.len(), 4);
