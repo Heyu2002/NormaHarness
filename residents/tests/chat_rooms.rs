@@ -22,7 +22,7 @@ use norma_residents::{
 use tokio::{
     sync::{Mutex, mpsc},
     task::JoinHandle,
-    time::{sleep, timeout},
+    time::sleep,
 };
 
 struct FakeMailbox(mpsc::UnboundedSender<ResidentEvent>);
@@ -109,17 +109,13 @@ async fn start_fake(
 }
 
 async fn wait_done(chat: &Arc<ChatResident>, id: u64) -> ChatRoom {
-    timeout(Duration::from_secs(3), async {
-        loop {
-            let room = chat.room(id).await.unwrap();
-            if !room.busy {
-                return room;
-            }
-            sleep(Duration::from_millis(10)).await;
+    loop {
+        let room = chat.room(id).await.unwrap();
+        if !room.busy {
+            return room;
         }
-    })
-    .await
-    .expect("room should finish")
+        sleep(Duration::from_millis(10)).await;
+    }
 }
 
 #[tokio::test]
@@ -357,18 +353,18 @@ async fn room_tools_query_members_through_rtdf() -> Result<(), Box<dyn Error>> {
             ),
         )
         .await?;
-    let result = timeout(Duration::from_secs(2), async {
-        loop {
-            if let Some(ResidentEvent::Message(message)) = alpha_rx.recv().await {
-                if message.message().kind().as_str() == ROOM_MEMBERS_TOOL_RESULT_KIND {
-                    break serde_json::from_value::<RoomMembersResult>(
-                        message.message().payload().clone(),
-                    );
-                }
+    let result = loop {
+        let Some(event) = alpha_rx.recv().await else {
+            return Err("room-members caller inbox closed".into());
+        };
+        if let ResidentEvent::Message(message) = event {
+            if message.message().kind().as_str() == ROOM_MEMBERS_TOOL_RESULT_KIND {
+                break serde_json::from_value::<RoomMembersResult>(
+                    message.message().payload().clone(),
+                )?;
             }
         }
-    })
-    .await??;
+    };
     assert_eq!(result.room_name.as_deref(), Some("Architecture"));
     assert_eq!(result.members, vec!["alpha", "beta"]);
     assert!(result.error.is_none());
@@ -423,16 +419,16 @@ async fn tool_resident_publishes_a_gif_attachment() -> Result<(), Box<dyn Error>
             ),
         )
         .await?;
-    let result: MediaPublishResult = timeout(Duration::from_secs(2), async {
-        loop {
-            if let Some(ResidentEvent::Message(message)) = receiver.recv().await {
-                if message.message().kind().as_str() == MEDIA_PUBLISH_RESULT_KIND {
-                    break serde_json::from_value(message.message().payload().clone());
-                }
+    let result: MediaPublishResult = loop {
+        let Some(event) = receiver.recv().await else {
+            return Err("media caller inbox closed".into());
+        };
+        if let ResidentEvent::Message(message) = event {
+            if message.message().kind().as_str() == MEDIA_PUBLISH_RESULT_KIND {
+                break serde_json::from_value(message.message().payload().clone())?;
             }
         }
-    })
-    .await??;
+    };
     assert!(result.error.is_none());
     let asset = result.asset.expect("published GIF");
     assert_eq!(asset.mime_type, "image/gif");
@@ -543,20 +539,17 @@ async fn live_codex_can_call_group_member_tool() -> Result<(), Box<dyn Error>> {
                 .into(),
         )
         .await?;
-    let room = timeout(Duration::from_secs(330), async {
-        loop {
-            let room = chat_runtime
-                .resident()
-                .room(group.id)
-                .await
-                .expect("group exists");
-            if !room.busy {
-                break room;
-            }
-            sleep(Duration::from_millis(200)).await;
+    let room = loop {
+        let room = chat_runtime
+            .resident()
+            .room(group.id)
+            .await
+            .expect("group exists");
+        if !room.busy {
+            break room;
         }
-    })
-    .await?;
+        sleep(Duration::from_millis(200)).await;
+    };
     let answer = room.messages.last().expect("Codex answer");
     assert_eq!(answer.role, "agent", "{answer:?}");
     assert!(

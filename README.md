@@ -339,6 +339,8 @@ provider thread mappings are saved locally under `%LOCALAPPDATA%\NormaHarness` o
 or the XDG/HOME data directory elsewhere. Set `NORMA_DATA_DIR` to override it.
 Rooms retain their IDs after page close, idle sleep, and process restart. The idle threshold
 is `NORMA_THREAD_IDLE_SECS` (default 1800). Each online model has one ordinary-chat entry and one incognito-chat entry; group rooms and archives are listed separately.
+An active turn waits for its Resident to report completion or failure; Norma does not impose a turn deadline.
+The chat view renders Resident replies as Markdown, including tables, links, and code blocks; messages remain stored as their original text.
 If a provider thread cannot resume, the Resident rebuilds context from saved messages.
 Long-term memory is off by default and can be enabled in Settings. It extracts facts
 only after room sleep (following any configured end hook) or provider context compaction.

@@ -1,4 +1,4 @@
-use std::{error::Error, sync::Arc, time::Duration};
+use std::{error::Error, sync::Arc};
 
 use norma_harness::{
     Mailbox, MailboxAddress, MailboxError, MessageSender, NormaHarness, RegistrationSender,
@@ -8,7 +8,7 @@ use norma_residents::codex::{
     CodexResident, CodexResidentConfig, CodexSandbox, CodexTurnRequest, CodexTurnResult,
     CodexTurnStatus, TURN_RESULT_KIND, turn_request_message,
 };
-use tokio::{sync::mpsc, time::timeout};
+use tokio::sync::mpsc;
 
 struct CallerMailbox(mpsc::Sender<ResidentEvent>);
 
@@ -112,18 +112,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .await?;
 
-    let result: CodexTurnResult = timeout(Duration::from_secs(330), async {
-        while let Some(event) = inbox.recv().await {
-            if let ResidentEvent::Message(message) = event {
-                if message.message().kind().as_str() == TURN_RESULT_KIND {
-                    let result = serde_json::from_value(message.message().payload().clone())?;
-                    return Ok::<CodexTurnResult, Box<dyn Error>>(result);
-                }
+    let result: CodexTurnResult = loop {
+        let Some(event) = inbox.recv().await else {
+            return Err("caller inbox closed before Codex replied".into());
+        };
+        if let ResidentEvent::Message(message) = event {
+            if message.message().kind().as_str() == TURN_RESULT_KIND {
+                break serde_json::from_value(message.message().payload().clone())?;
             }
         }
-        Err("caller inbox closed before Codex replied".into())
-    })
-    .await??;
+    };
     println!("{}", serde_json::to_string_pretty(&result)?);
 
     codex.shutdown().await?;

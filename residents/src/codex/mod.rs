@@ -14,7 +14,6 @@ use std::{
         Arc, Mutex as StdMutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 
 use norma_harness::{
@@ -28,7 +27,6 @@ use thiserror::Error;
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
-    time::timeout,
 };
 
 use crate::{
@@ -94,7 +92,6 @@ pub struct CodexResidentConfig {
     pub effort: Option<String>,
     pub sandbox: CodexSandbox,
     pub mailbox_capacity: usize,
-    pub turn_timeout: Duration,
     pub memory: Option<Arc<MemoryManager>>,
     pub conversation_path: Option<PathBuf>,
 }
@@ -110,7 +107,6 @@ impl CodexResidentConfig {
             effort: None,
             sandbox: CodexSandbox::ReadOnly,
             mailbox_capacity: 16,
-            turn_timeout: Duration::from_secs(300),
             memory: None,
             conversation_path: None,
         }
@@ -295,9 +291,9 @@ impl CodexResident {
         registration: RegistrationSender,
         messages: MessageSender,
     ) -> Result<CodexResidentRuntime, CodexResidentError> {
-        if config.mailbox_capacity == 0 || config.turn_timeout.is_zero() {
+        if config.mailbox_capacity == 0 {
             return Err(CodexResidentError::Config(
-                "mailbox_capacity and turn_timeout must be positive".into(),
+                "mailbox_capacity must be positive".into(),
             ));
         }
         if !config.cwd.is_absolute() {
@@ -500,19 +496,19 @@ impl CodexResident {
                 }
             }
         }
-        let mut result = timeout(
-            self.config.turn_timeout,
-            server.as_mut().expect("server just started").run_turn(
+        let mut result = server
+            .as_mut()
+            .expect("server just started")
+            .run_turn(
                 &turn_request,
                 self,
                 &self.config.cwd,
                 self.config.model.as_deref(),
                 self.config.effort.as_deref(),
                 self.config.sandbox,
-            ),
-        )
-        .await;
-        if matches!(&result, Ok(Err(AppServerError::Protocol(error))) if error.starts_with("thread/resume:"))
+            )
+            .await;
+        if matches!(&result, Err(AppServerError::Protocol(error)) if error.starts_with("thread/resume:"))
         {
             eprintln!("provider thread cannot be resumed; rebuilding from local room history");
             conversation.thread_id = None;
@@ -534,21 +530,21 @@ impl CodexResident {
                     }
                 }
             }
-            result = timeout(
-                self.config.turn_timeout,
-                server.as_mut().expect("server still active").run_turn(
+            result = server
+                .as_mut()
+                .expect("server still active")
+                .run_turn(
                     &turn_request,
                     self,
                     &self.config.cwd,
                     self.config.model.as_deref(),
                     self.config.effort.as_deref(),
                     self.config.sandbox,
-                ),
-            )
-            .await;
+                )
+                .await;
         }
         match result {
-            Ok(Ok(result)) => {
+            Ok(result) => {
                 if let Some(thread_id) = &result.thread_id {
                     conversation.thread_id = Some(thread_id.clone());
                 }
@@ -569,13 +565,9 @@ impl CodexResident {
                 }
                 result
             }
-            Ok(Err(error)) => {
+            Err(error) => {
                 *server = None;
                 CodexTurnResult::failed(request.request_id, error.to_string())
-            }
-            Err(_) => {
-                *server = None;
-                CodexTurnResult::failed(request.request_id, "Codex turn timed out")
             }
         }
     }
@@ -635,32 +627,27 @@ impl CodexResident {
                 }
             }
         }
-        let result = timeout(
-            self.config.turn_timeout,
-            server.as_mut().expect("server just started").run_turn(
+        let result = server
+            .as_mut()
+            .expect("server just started")
+            .run_turn(
                 &request,
                 self,
                 &self.config.cwd,
                 self.config.model.as_deref(),
                 self.config.effort.as_deref(),
                 self.config.sandbox,
-            ),
-        )
-        .await;
+            )
+            .await;
         let response = match result {
-            Ok(Ok(result)) if result.status == CodexTurnStatus::Completed => result.final_response,
-            Ok(Ok(result)) => {
+            Ok(result) if result.status == CodexTurnStatus::Completed => result.final_response,
+            Ok(result) => {
                 eprintln!("memory extraction failed: {:?}", result.error);
                 return;
             }
-            Ok(Err(error)) => {
+            Err(error) => {
                 *server = None;
                 eprintln!("memory extraction failed: {error}");
-                return;
-            }
-            Err(_) => {
-                *server = None;
-                eprintln!("memory extraction timed out");
                 return;
             }
         };
@@ -720,17 +707,16 @@ impl CodexResident {
                 .remove(call_id);
             return Err(error.to_string());
         }
-        let result = timeout(Duration::from_secs(15), receiver).await;
+        let result = receiver.await;
         self.mailbox
             .pending_tools
             .lock()
             .expect("tool pending mutex")
             .remove(call_id);
         match result {
-            Ok(Ok(result)) if result.room_id == origin.room_id => Ok(result),
-            Ok(Ok(_)) => Err("room-members result belongs to another group".into()),
-            Ok(Err(_)) => Err("room-members reply channel closed".into()),
-            Err(_) => Err("room-members lookup timed out".into()),
+            Ok(result) if result.room_id == origin.room_id => Ok(result),
+            Ok(_) => Err("room-members result belongs to another group".into()),
+            Err(_) => Err("room-members reply channel closed".into()),
         }
     }
 
@@ -762,20 +748,19 @@ impl CodexResident {
                 .remove(&call_id);
             return Err(error.to_string());
         }
-        let result = timeout(Duration::from_secs(20), receiver).await;
+        let result = receiver.await;
         self.mailbox
             .pending_media
             .lock()
             .expect("media pending mutex")
             .remove(&call_id);
         match result {
-            Ok(Ok(result)) => result.asset.ok_or_else(|| {
+            Ok(result) => result.asset.ok_or_else(|| {
                 result
                     .error
                     .unwrap_or_else(|| "media publication failed".into())
             }),
-            Ok(Err(_)) => Err("media publication channel closed".into()),
-            Err(_) => Err("media publication timed out".into()),
+            Err(_) => Err("media publication channel closed".into()),
         }
     }
 }

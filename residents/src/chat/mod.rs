@@ -9,7 +9,7 @@ use std::{
         Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -22,7 +22,6 @@ use thiserror::Error;
 use tokio::{
     sync::{Mutex, broadcast, mpsc, oneshot},
     task::JoinHandle,
-    time::timeout,
 };
 
 use self::storage::ChatStorage;
@@ -33,8 +32,6 @@ use crate::llm::{
 };
 use crate::media::{MAX_MESSAGE_MEDIA, MediaAsset, MediaView};
 use crate::tools::{ROOM_MEMBERS_QUERY_KIND, RoomMembersQuery, RoomMembersResult};
-
-const RESULT_TIMEOUT: Duration = Duration::from_secs(330);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -699,15 +696,11 @@ impl ChatResident {
             self.pending.lock().await.remove(&request_id);
             return Err(ChatError::Internal(error.to_string()));
         }
-        let result = match timeout(RESULT_TIMEOUT, receiver).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => {
-                self.pending.lock().await.remove(&request_id);
-                return Err(ChatError::Internal("Resident reply channel closed".into()));
-            }
+        let result = match receiver.await {
+            Ok(result) => result,
             Err(_) => {
                 self.pending.lock().await.remove(&request_id);
-                return Err(ChatError::Internal("Resident reply timed out".into()));
+                return Err(ChatError::Internal("Resident reply channel closed".into()));
             }
         };
         if result.status != LlmTurnStatus::Completed {

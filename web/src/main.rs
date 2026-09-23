@@ -397,11 +397,21 @@ async fn js() -> impl IntoResponse {
         include_str!("../static/app.js"),
     )
 }
+async fn markdown_js() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        include_str!("../static/vendor/markdown-it.umd.min.js"),
+    )
+}
 
 fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/style.css", get(css))
+        .route("/markdown-it.js", get(markdown_js))
         .route("/app.js", get(js))
         .route("/api/residents", get(residents))
         .route("/api/memory", get(memory_status).post(set_memory))

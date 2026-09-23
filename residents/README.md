@@ -91,8 +91,7 @@ support it.
 Set `NORMA_CODEX_WORKSPACE_WRITE=1` for the example to permit Codex to edit
 the selected workspace. The default example run is read-only.
 
-`CodexResidentConfig` defaults to `gpt-6-luna`, the local Codex reasoning effort, `ReadOnly`, a 16-event mailbox,
-and a five-minute turn timeout. Override `model` for another available Codex
+`CodexResidentConfig` defaults to `gpt-6-luna`, the local Codex reasoning effort, `ReadOnly`, and a 16-event mailbox. Turns and tool replies wait for the responsible Resident to report a result; Norma does not set a deadline. Override `model` for another available Codex
 model, or set `NORMA_CODEX_EFFORT` for a different effort in the example or web app.
 Set `sandbox = CodexSandbox::WorkspaceWrite` in an
 application that explicitly allows Codex to edit its workspace. The adapter
