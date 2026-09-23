@@ -1,2 +1,8 @@
 /target/
 *.profraw
+
+# Local Codex login and environment credentials.
+.codex/
+auth.json
+.env
+.env.*
