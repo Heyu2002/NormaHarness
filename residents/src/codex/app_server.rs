@@ -11,7 +11,7 @@ use tokio::{
     process::{Child, ChildStdin, ChildStdout, Command},
 };
 
-use super::{CodexResident, CodexSandbox, CodexTurnRequest, CodexTurnResult, CodexTurnStatus};
+use super::{CodexResidentCore, CodexSandbox, CodexTurnRequest, CodexTurnResult, CodexTurnStatus};
 use crate::{
     media::{MAX_MESSAGE_MEDIA, MediaAsset},
     tools::MediaPublishRequest,
@@ -87,7 +87,7 @@ impl CodexAppServer {
     pub(crate) async fn run_turn(
         &mut self,
         request: &CodexTurnRequest,
-        resident: &CodexResident,
+        resident: &CodexResidentCore,
         cwd: &Path,
         model: Option<&str>,
         effort: Option<&str>,
@@ -97,10 +97,22 @@ impl CodexAppServer {
         let cwd = cwd
             .to_str()
             .ok_or_else(|| AppServerError::Protocol("working directory is not UTF-8".into()))?;
+        let dynamic_tools = if request.origin.is_some() {
+            resident
+                .load_tool_catalog(&request.request_id)
+                .await
+                .map_err(AppServerError::Protocol)?
+        } else {
+            Vec::new()
+        };
         let thread_id = match &request.thread_id {
             Some(id) => {
                 if !self.loaded_threads.contains(id) {
-                    self.call("thread/resume", json!({"threadId": id})).await?;
+                    self.call(
+                        "thread/resume",
+                        json!({"threadId": id, "dynamicTools": dynamic_tools}),
+                    )
+                    .await?;
                     self.loaded_threads.insert(id.clone());
                 }
                 id.clone()
@@ -110,21 +122,7 @@ impl CodexAppServer {
                     "cwd": cwd,
                     "approvalPolicy": "never",
                     "serviceName": "norma_codex_resident",
-                    "dynamicTools": [{
-                        "type": "function",
-                        "name": "list_group_members",
-                        "description": "查询当前群聊中的 LLM Resident 成员。仅在当前请求来自群聊时使用。无需参数。",
-                        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
-                    }, {
-                        "type": "function",
-                        "name": "publish_media",
-                        "description": "把生成的 PNG、JPEG、WebP 或 GIF 图片发布为当前聊天的可预览、可下载附件。图片生成后必须调用此工具；只在回复中写文件名不会把文件交给用户。单次回复最多 4 个，每个最多 8 MiB。",
-                        "inputSchema": {"type": "object", "properties": {
-                            "filename": {"type": "string"},
-                            "mime_type": {"type": "string", "enum": ["image/png", "image/jpeg", "image/webp", "image/gif"]},
-                            "base64": {"type": "string", "description": "完整图片文件内容的标准 base64，不包含 data URL 前缀"}
-                        }, "required": ["filename", "mime_type", "base64"], "additionalProperties": false}
-                    }]
+                    "dynamicTools": dynamic_tools
                 });
                 if let Some(model) = model {
                     params["model"] = json!(model);
@@ -137,7 +135,19 @@ impl CodexAppServer {
         };
 
         let mut inputs = vec![json!({"type": "text", "text": request.prompt})];
-        for event in &request.context {
+        let image_events = request
+            .origin
+            .as_ref()
+            .and_then(|origin| {
+                request
+                    .context
+                    .iter()
+                    .filter(|event| event.room_id == origin.room_id && event.role == "user")
+                    .max_by_key(|event| event.id)
+                    .map(std::slice::from_ref)
+            })
+            .unwrap_or(&request.context);
+        for event in image_events {
             for attachment in &event.attachments {
                 for path in &attachment.model_paths {
                     inputs.push(json!({"type": "localImage", "path": path}));
@@ -275,7 +285,7 @@ impl CodexAppServer {
         &mut self,
         method: &str,
         params: Value,
-        tool_context: Option<(&CodexResident, &CodexTurnRequest)>,
+        tool_context: Option<(&CodexResidentCore, &CodexTurnRequest)>,
     ) -> Result<Value, AppServerError> {
         self.next_id += 1;
         let id = self.next_id;
@@ -305,14 +315,74 @@ impl CodexAppServer {
     async fn answer_server_request(
         &mut self,
         request: &Value,
-        tool_context: Option<(&CodexResident, &CodexTurnRequest)>,
+        tool_context: Option<(&CodexResidentCore, &CodexTurnRequest)>,
     ) -> Result<(), AppServerError> {
         let id = &request["id"];
         let method = request["method"].as_str().unwrap_or_default();
         if method == "item/tool/call" {
             let params = &request["params"];
-            let output = if params["namespace"].is_null() && params["tool"] == "list_group_members"
-            {
+            let output = if params["namespace"].is_null() && params["tool"] == "read_chat_context" {
+                match tool_context {
+                    Some((resident, turn)) => {
+                        let args = &params["arguments"];
+                        let scope_all = match args["scope"].as_str() {
+                            None | Some("current") => Ok(false),
+                            Some("all") => Ok(true),
+                            _ => Err("scope must be current or all"),
+                        };
+                        let before = if args["before_message_id"].is_null() {
+                            Ok(None)
+                        } else {
+                            args["before_message_id"]
+                                .as_u64()
+                                .filter(|id| *id > 0)
+                                .map(Some)
+                                .ok_or("before_message_id must be a positive integer")
+                        };
+                        let limit = if args["limit"].is_null() {
+                            Ok(50)
+                        } else {
+                            args["limit"]
+                                .as_u64()
+                                .filter(|limit| (1..=200).contains(limit))
+                                .map(|limit| limit as usize)
+                                .ok_or("limit must be between 1 and 200")
+                        };
+                        match (scope_all, before, limit) {
+                            (Ok(scope_all), Ok(before), Ok(limit)) => resident
+                                .invoke_chat_context_tool(
+                                    turn,
+                                    params["callId"].as_str().unwrap_or_default(),
+                                    scope_all,
+                                    before,
+                                    limit,
+                                )
+                                .await
+                                .map(|result| {
+                                    let success = result.error.is_none();
+                                    (
+                                        success,
+                                        serde_json::to_string(&result)
+                                            .expect("serializable chat context"),
+                                    )
+                                })
+                                .unwrap_or_else(|error| (false, error)),
+                            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+                                (false, error.into())
+                            }
+                        }
+                    }
+                    None => (false, "tool call is outside the active turn".into()),
+                }
+            } else if params["namespace"].is_null() && params["tool"] == "read_resident_memory" {
+                match tool_context {
+                    Some((resident, turn)) => resident
+                        .read_resident_memory_tool(turn.origin.as_ref())
+                        .map(|value| (true, value.to_string()))
+                        .unwrap_or_else(|error| (false, error)),
+                    None => (false, "tool call is outside the active turn".into()),
+                }
+            } else if params["namespace"].is_null() && params["tool"] == "list_group_members" {
                 match tool_context {
                     Some((resident, turn)) => resident
                         .invoke_room_members_tool(

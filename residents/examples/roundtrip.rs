@@ -106,6 +106,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 prompt,
                 origin: None,
                 source_resident: None,
+                chat_turn_kind: None,
                 thread_id: std::env::var("NORMA_CODEX_THREAD_ID").ok(),
                 context: Vec::new(),
             },

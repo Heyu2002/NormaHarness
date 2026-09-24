@@ -38,27 +38,27 @@ as a separate message.
 `context` events from rooms the Resident has joined. Chat sets `origin` to
 `{"kind":"solo"|"group","room_id":7,"room_name":"Design"}`. The LLM
 inbound Gate validates that origin and stamps `source_resident` from RTDF's
-authenticated sender. Codex sends the model one JSON envelope containing
-`source`, `new_events`, and `current_request`. Any Resident advertising
-`llm` must use those events as its shared conversation context, answer this
-protocol, and return the matching `request_id` to the source Resident. Codex handles this
-shared protocol and the original `codex.turn.*` pair.
+authenticated sender. Any Resident advertising `llm` can use those events as
+shared conversation context and must return the matching `request_id`. Codex
+sends a short user notice with the room and turn stage, and lets the model
+retrieve message text and history through a native dynamic tool. It also handles the original
+`codex.turn.*` pair.
 
 `chat::ChatResident` owns rooms and correlates replies. A one-member room
-sends one turn. A group room sends members turns in sequence, passing previous
-contributions to the next member, then asks the first member for a final
-synthesis. A group message with `@member` or `@{member}` calls only the named
-group members; without mentions, all members collaborate. Chat serializes
+sends one turn. A group room sends initial member turns concurrently with independent
+context. A group message with `@member` or `@{member}` initially calls only the named
+members; without mentions, all members reply. Members can mention each other to trigger
+follow-up turns, and `@你` marks a complete answer to the user. Chat serializes
 turns per Resident and sends the messages from all its rooms in chronological
 order. Incognito rooms only receive their own context. The Resident owns
 provider thread continuity for each room.
 
-`tools::RoomToolsResident` advertises `tool.room_members`. Codex exposes its
-`list_group_members` function through app-server dynamic tools. The function
-reads the current group ID from the turn origin, sends a request through RTDF
-to the tools Resident, and receives the actual member list from Chat Resident.
-Chat allows only a Resident that belongs to that group to query it. Dynamic
-tools are currently an experimental Codex app-server protocol.
+`tools::RoomToolsResident` provides a model tool catalog over RTDF. Codex
+registers its `read_chat_context`, `list_group_members`, `read_resident_memory`, and `publish_media`
+functions through app-server dynamic tools. Chat tools return through the tools
+Resident to Chat Resident; memory is read from the current Codex Resident. Chat checks the caller's membership, the current
+turn's visible message IDs, and incognito boundaries before returning history.
+Dynamic tools are currently an experimental Codex app-server protocol.
 
 ## Images and GIFs
 
@@ -102,8 +102,11 @@ The app-server process belongs to `CodexResidentRuntime`. Call
 `runtime.shutdown().await` to finish queued work, stop the process, and
 unregister the precise Resident instance. The worker serializes turns on one
 app-server connection. A failed or timed-out connection is replaced before the
-next request. Only one `CodexResident` instance can be active in a process;
-another `launch` call fails until that instance has fully stopped.
+next request. The original `CodexResident` still permits only one active
+instance per process. `Codex56LunaResident` is a separate Resident using the
+same private Codex execution code and a fixed `gpt-5.6-luna` model. Each owns
+its own app-server process; callers should use separate conversation paths for
+their provider thread mappings.
 
 See the [official Codex App Server documentation](https://learn.chatgpt.com/docs/app-server)
 and [Codex authentication documentation](https://learn.chatgpt.com/docs/auth).

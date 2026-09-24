@@ -4,7 +4,7 @@
 pub mod storage;
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     sync::{
         Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -21,17 +21,20 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
     sync::{Mutex, broadcast, mpsc, oneshot},
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
 };
 
 use self::storage::ChatStorage;
 use crate::llm::{
-    LlmContextMessage, LlmOrigin, LlmRoomKind, LlmTurnRequest, LlmTurnResult, LlmTurnStatus,
-    MEMORY_TRIGGER_KIND, MemoryTrigger, MemoryTriggerReason, TURN_RESULT_KIND,
+    LlmChatTurnKind, LlmContextMessage, LlmOrigin, LlmRoomKind, LlmTurnRequest, LlmTurnResult,
+    LlmTurnStatus, MEMORY_TRIGGER_KIND, MemoryTrigger, MemoryTriggerReason, TURN_RESULT_KIND,
     turn_request_message,
 };
 use crate::media::{MAX_MESSAGE_MEDIA, MediaAsset, MediaView};
-use crate::tools::{ROOM_MEMBERS_QUERY_KIND, RoomMembersQuery, RoomMembersResult};
+use crate::tools::{
+    CHAT_CONTEXT_QUERY_KIND, CHAT_CONTEXT_RESULT_KIND, ChatContextQuery, ChatContextResult,
+    ROOM_MEMBERS_QUERY_KIND, RoomMembersQuery, RoomMembersResult,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -295,6 +298,29 @@ impl ChatResident {
                         .await;
                     continue;
                 }
+                if message.message().kind().as_str() == CHAT_CONTEXT_QUERY_KIND {
+                    let source = message.source().clone();
+                    if source.as_str() != "tools.rooms" {
+                        continue;
+                    }
+                    let Ok(query) = serde_json::from_value::<ChatContextQuery>(
+                        message.message().payload().clone(),
+                    ) else {
+                        continue;
+                    };
+                    let result = worker_resident.chat_context_for(&query).await;
+                    let reply = norma_harness::FlowMessage::new(
+                        norma_harness::MessageKind::new(CHAT_CONTEXT_RESULT_KIND)
+                            .expect("static kind"),
+                        serde_json::to_value(result).expect("serializable chat context"),
+                    );
+                    let instance_id = *worker_resident.instance_id.get().expect("registered");
+                    let _ = worker_resident
+                        .messages
+                        .send(instance_id, &source, reply)
+                        .await;
+                    continue;
+                }
                 if message.message().kind().as_str() != TURN_RESULT_KIND {
                     continue;
                 }
@@ -337,6 +363,79 @@ impl ChatResident {
                 members: Vec::new(),
                 error: Some("group not found or requester is not a member".into()),
             },
+        }
+    }
+
+    async fn chat_context_for(&self, query: &ChatContextQuery) -> ChatContextResult {
+        let request = &query.request;
+        let rooms = self.rooms.lock().await;
+        let Some(current) = rooms.get(&request.room_id).map(|state| &state.room) else {
+            return ChatContextResult {
+                call_id: request.call_id.clone(),
+                room_id: request.room_id,
+                room_name: None,
+                messages: Vec::new(),
+                has_earlier: false,
+                next_before_message_id: None,
+                error: Some("room not found or requester is not a member".into()),
+            };
+        };
+        if !current.members.contains(&query.requester) {
+            return ChatContextResult {
+                call_id: request.call_id.clone(),
+                room_id: request.room_id,
+                room_name: None,
+                messages: Vec::new(),
+                has_earlier: false,
+                next_before_message_id: None,
+                error: Some("room not found or requester is not a member".into()),
+            };
+        }
+        let mut messages = rooms
+            .values()
+            .filter(|state| {
+                state.room.members.contains(&query.requester)
+                    && request.visible_through.contains_key(&state.room.id)
+                    && (request.scope_all || state.room.id == request.room_id)
+                    && if current.incognito {
+                        state.room.id == request.room_id
+                    } else {
+                        !state.room.incognito
+                    }
+            })
+            .flat_map(|state| {
+                state.room.messages.iter().filter_map(|message| {
+                    (message.id <= request.visible_through[&state.room.id]
+                        && request
+                            .before_message_id
+                            .is_none_or(|before| message.id < before))
+                    .then(|| LlmContextMessage {
+                        id: message.id,
+                        room_id: state.room.id,
+                        room_name: state.room.name.clone(),
+                        role: message.role.clone(),
+                        author: message.author.clone(),
+                        text: message.text.clone(),
+                        created_at_ms: message.created_at,
+                        attachments: message.media.clone(),
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        messages.sort_by_key(|message| message.id);
+        let has_earlier = messages.len() > request.limit;
+        if has_earlier {
+            messages.drain(..messages.len() - request.limit);
+        }
+        let next_before_message_id = has_earlier.then(|| messages[0].id);
+        ChatContextResult {
+            call_id: request.call_id.clone(),
+            room_id: request.room_id,
+            room_name: Some(current.name.clone()),
+            messages,
+            has_earlier,
+            next_before_message_id,
+            error: None,
         }
     }
 
@@ -533,8 +632,7 @@ impl ChatResident {
         } else {
             Vec::new()
         };
-        let targeted = !mentioned.is_empty();
-        let members = if targeted {
+        let members = if !mentioned.is_empty() {
             mentioned
         } else {
             state.room.members.clone()
@@ -546,6 +644,12 @@ impl ChatResident {
             .room
             .messages
             .push(self.new_message("user", "你", text.clone(), media));
+        let round_start_message_id = state
+            .room
+            .messages
+            .last()
+            .expect("user message was added")
+            .id;
         let snapshot = state.room.clone();
         let updates = state.updates.clone();
         self.save_locked(&rooms)?;
@@ -559,51 +663,110 @@ impl ChatResident {
         let resident = self.clone();
         tokio::spawn(async move {
             resident
-                .run_turn(id, task, members, is_group, targeted)
+                .run_turn(id, task, members, is_group, round_start_message_id)
                 .await
         });
         Ok(snapshot)
     }
 
     async fn run_turn(
-        &self,
+        self: &Arc<Self>,
         id: u64,
         task: String,
         members: Vec<String>,
         is_group: bool,
-        targeted: bool,
+        round_start_message_id: u64,
     ) {
-        let mut contributions: Vec<(String, String)> = Vec::new();
-        for member in &members {
+        if !is_group {
+            let member = &members[0];
             self.set_active(id, Some(member.clone())).await;
-            let prompt = if is_group {
-                contribution_prompt(&task, member, &contributions)
-            } else {
-                task.clone()
-            };
-            match self.ask(id, member, prompt, "agent").await {
-                Ok(answer) => {
-                    contributions.push((member.clone(), answer));
+            if let Err(error) = self
+                .ask(id, member, task, LlmChatTurnKind::Direct, None)
+                .await
+            {
+                self.push_message(id, "error", "系统", format!("{member}: {error}"))
+                    .await;
+            }
+            self.finish(id).await;
+            return;
+        }
+
+        let mut turns = JoinSet::new();
+        let mut remaining = members.clone();
+        self.set_active(id, Some(remaining.join("、"))).await;
+        for member in &members {
+            let resident = self.clone();
+            let member = member.clone();
+            let prompt = contribution_prompt(&task, &member);
+            turns.spawn(async move {
+                let answer = resident
+                    .ask(
+                        id,
+                        &member,
+                        prompt,
+                        LlmChatTurnKind::Contribution,
+                        Some(round_start_message_id),
+                    )
+                    .await;
+                (member, answer)
+            });
+        }
+
+        let all_members = self
+            .room(id)
+            .await
+            .map(|room| room.members)
+            .unwrap_or_default();
+        let mut pending = VecDeque::new();
+        while let Some(result) = turns.join_next().await {
+            match result {
+                Ok((member, answer)) => {
+                    remaining.retain(|pending| pending != &member);
+                    self.set_active(id, (!remaining.is_empty()).then(|| remaining.join("、")))
+                        .await;
+                    match answer {
+                        Ok(answer) => {
+                            enqueue_mentions(&mut pending, &member, &answer, &all_members)
+                        }
+                        Err(error) => {
+                            self.push_message(id, "error", "系统", format!("{member}: {error}"))
+                                .await;
+                        }
+                    }
                 }
                 Err(error) => {
-                    self.push_message(id, "error", "系统", format!("{member}: {error}"))
+                    self.push_message(id, "error", "系统", format!("Resident 任务失败: {error}"))
                         .await;
-                    self.finish(id).await;
-                    return;
                 }
             }
         }
-        if is_group && !targeted {
-            let lead = &members[0];
-            self.set_active(id, Some(lead.clone())).await;
+
+        const MAX_MENTION_TURNS: usize = 16;
+        let mut follow_up_count = 0;
+        while let Some((source, target)) = pending.pop_front() {
+            if follow_up_count == MAX_MENTION_TURNS {
+                self.push_message(
+                    id,
+                    "error",
+                    "系统",
+                    "本轮模型互相提及次数已达上限，请发送新消息继续讨论。".into(),
+                )
+                .await;
+                break;
+            }
+            follow_up_count += 1;
+            self.set_active(id, Some(target.clone())).await;
+            let prompt = format!(
+                "群聊成员 {source} @ 了你。请读取本房间最新消息并回应。若答案已完整，请以 @你 开头直接回答用户；需要其他成员时可 @对应成员。除非需要下一位成员继续，否则不要随意 @。"
+            );
             match self
-                .ask(id, lead, synthesis_prompt(&task, &contributions), "summary")
+                .ask(id, &target, prompt, LlmChatTurnKind::Mention, None)
                 .await
             {
-                Ok(_) => {}
+                Ok(answer) => enqueue_mentions(&mut pending, &target, &answer, &all_members),
                 Err(error) => {
-                    self.push_message(id, "error", "系统", format!("汇总失败: {error}"))
-                        .await
+                    self.push_message(id, "error", "系统", format!("{target}: {error}"))
+                        .await;
                 }
             }
         }
@@ -615,7 +778,8 @@ impl ChatResident {
         id: u64,
         member: &str,
         prompt: String,
-        response_role: &str,
+        turn_kind: LlmChatTurnKind,
+        round_start_message_id: Option<u64>,
     ) -> Result<String, ChatError> {
         let target =
             ResidentKey::new(member).map_err(|error| ChatError::Internal(error.to_string()))?;
@@ -653,16 +817,24 @@ impl ChatResident {
                     }
             })
             .flat_map(|state| {
-                state.room.messages.iter().map(|message| LlmContextMessage {
-                    id: message.id,
-                    room_id: state.room.id,
-                    room_name: state.room.name.clone(),
-                    role: message.role.clone(),
-                    author: message.author.clone(),
-                    text: message.text.clone(),
-                    created_at_ms: message.created_at,
-                    attachments: message.media.clone(),
-                })
+                state
+                    .room
+                    .messages
+                    .iter()
+                    .filter(|message| {
+                        state.room.id != id
+                            || round_start_message_id.is_none_or(|start| message.id <= start)
+                    })
+                    .map(|message| LlmContextMessage {
+                        id: message.id,
+                        room_id: state.room.id,
+                        room_name: state.room.name.clone(),
+                        role: message.role.clone(),
+                        author: message.author.clone(),
+                        text: message.text.clone(),
+                        created_at_ms: message.created_at,
+                        attachments: message.media.clone(),
+                    })
             })
             .collect::<Vec<_>>();
         drop(rooms);
@@ -682,6 +854,7 @@ impl ChatResident {
         let request = LlmTurnRequest {
             request_id: request_id.clone(),
             prompt,
+            chat_turn_kind: Some(turn_kind),
             origin: Some(origin),
             source_resident: None,
             thread_id: None,
@@ -717,7 +890,12 @@ impl ChatResident {
             .filter(|answer| !answer.trim().is_empty())
             .or_else(|| (!attachments.is_empty()).then(|| "已发送附件".into()))
             .ok_or_else(|| ChatError::Internal("Resident returned an empty response".into()))?;
-        self.push_message_with_media(id, response_role, member, answer.clone(), attachments)
+        let role = if turn_kind != LlmChatTurnKind::Direct && mentions_user(&answer) {
+            "summary"
+        } else {
+            "agent"
+        };
+        self.push_message_with_media(id, role, member, answer.clone(), attachments)
             .await;
         if compacted {
             if let Some(room) = self.room(id).await {
@@ -934,25 +1112,10 @@ fn now_ms() -> u64 {
 
 fn mentioned_members(text: &str, members: &[String]) -> Result<Vec<String>, ChatError> {
     let mut selected = Vec::new();
-    for (index, _) in text.match_indices('@') {
-        if text[..index]
-            .chars()
-            .next_back()
-            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-        {
+    for key in mention_candidates(text) {
+        if is_user_mention(key) {
             continue;
         }
-        let tail = &text[index + 1..];
-        let candidate = if let Some(rest) = tail.strip_prefix('{') {
-            rest.split_once('}').map(|(key, _)| key)
-        } else {
-            let end = tail
-                .find(|ch: char| !(ch.is_ascii_alphanumeric() || "_.-".contains(ch)))
-                .unwrap_or(tail.len());
-            let key = tail[..end].trim_end_matches('.');
-            (!key.is_empty()).then_some(key)
-        };
-        let Some(key) = candidate else { continue };
         if !members.iter().any(|member| member == key) {
             return Err(ChatError::Invalid(format!(
                 "@{key} is not a member of this group"
@@ -965,6 +1128,72 @@ fn mentioned_members(text: &str, members: &[String]) -> Result<Vec<String>, Chat
     Ok(selected)
 }
 
+fn mention_candidates(text: &str) -> Vec<&str> {
+    let mut candidates = Vec::new();
+    for (index, _) in text.match_indices('@') {
+        if text[..index]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            continue;
+        }
+        let tail = &text[index + 1..];
+        let candidate = if let Some(rest) = tail.strip_prefix('{') {
+            rest.split_once('}').map(|(key, _)| key)
+        } else if tail.strip_prefix("用户").is_some_and(|rest| {
+            rest.chars()
+                .next()
+                .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_')
+        }) {
+            Some("用户")
+        } else if tail.strip_prefix('你').is_some_and(|rest| {
+            rest.chars()
+                .next()
+                .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_')
+        }) {
+            Some("你")
+        } else {
+            let end = tail
+                .find(|ch: char| !(ch.is_ascii_alphanumeric() || "_.-".contains(ch)))
+                .unwrap_or(tail.len());
+            let key = tail[..end].trim_end_matches('.');
+            (!key.is_empty()).then_some(key)
+        };
+        if let Some(key) = candidate {
+            candidates.push(key);
+        }
+    }
+    candidates
+}
+
+fn mentions_user(text: &str) -> bool {
+    mention_candidates(text)
+        .iter()
+        .any(|key| is_user_mention(key))
+}
+
+fn is_user_mention(key: &str) -> bool {
+    matches!(key, "你" | "用户") || key.eq_ignore_ascii_case("user")
+}
+
+fn enqueue_mentions(
+    pending: &mut VecDeque<(String, String)>,
+    source: &str,
+    answer: &str,
+    members: &[String],
+) {
+    if mentions_user(answer) {
+        return;
+    }
+    let mut selected = HashSet::new();
+    for key in mention_candidates(answer) {
+        if key != source && members.iter().any(|member| member == key) && selected.insert(key) {
+            pending.push_back((source.to_owned(), key.to_owned()));
+        }
+    }
+}
+
 fn valid_room_name(name: String) -> Result<String, ChatError> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 80 {
@@ -975,28 +1204,10 @@ fn valid_room_name(name: String) -> Result<String, ChatError> {
     Ok(name.to_owned())
 }
 
-fn contribution_prompt(task: &str, member: &str, contributions: &[(String, String)]) -> String {
-    let mut prompt = format!(
-        "你正在一个多 Agent 协作聊天室中。用户任务：\n{task}\n\n你是 {member}。请给出你的独立分析或可执行结果，清楚说明依据与尚未解决的问题。请勿声称其他成员已经执行了未在下方出现的工作。"
-    );
-    if !contributions.is_empty() {
-        prompt.push_str("\n\n此前成员的贡献：");
-        for (name, answer) in contributions {
-            prompt.push_str(&format!("\n\n[{name}]\n{answer}"));
-        }
-        prompt.push_str("\n\n请在此前贡献的基础上补充、纠错或推进任务，避免简单重复。");
-    }
-    prompt
-}
-
-fn synthesis_prompt(task: &str, contributions: &[(String, String)]) -> String {
-    let mut prompt = format!(
-        "你是协作聊天室的汇总者。用户任务：\n{task}\n\n请综合以下所有成员的实际贡献，给出一致、可直接交付给用户的最终答复；保留有分歧或未验证之处。\n"
-    );
-    for (name, answer) in contributions {
-        prompt.push_str(&format!("\n[{name}]\n{answer}\n"));
-    }
-    prompt
+fn contribution_prompt(task: &str, member: &str) -> String {
+    format!(
+        "你正在一个多 Agent 协作聊天室中。用户任务：\n{task}\n\n你是 {member}。请独立思考并回复；不要假设其他成员已回答。若你的答案已完整，请以 @你 开头直接回答用户；需要其他成员继续处理时，可以 @群内成员。"
+    )
 }
 
 pub struct ChatResidentRuntime {

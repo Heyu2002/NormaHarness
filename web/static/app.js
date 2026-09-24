@@ -1,5 +1,7 @@
 const $ = (id) => document.getElementById(id);
-const state = { residents: [], rooms: [], selected: null, room: null, events: null, fingerprint: '', files: [] };
+let incognitoMode = false;
+try { incognitoMode = localStorage.getItem('norma-incognito-mode') === 'true'; } catch { /* Storage may be unavailable. */ }
+const state = { residents: [], rooms: [], selected: null, room: null, events: null, fingerprint: '', files: [], incognitoMode };
 // randomUUID is unavailable on non-secure LAN HTTP origins; getRandomValues still works there.
 const clientId = crypto.randomUUID?.()
   ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -49,7 +51,9 @@ function toast(message) {
 }
 
 function modelName(model) {
-  return model.model === 'gpt-6-luna' ? 'GPT-6 Luna' : model.model;
+  if (model.model === 'gpt-6-luna') return 'GPT-6 Luna';
+  if (model.model === 'gpt-5.6-luna') return 'GPT-5.6 Luna';
+  return model.model;
 }
 
 function addResidentIcon(icon, model) {
@@ -90,27 +94,25 @@ function renderSidebar() {
   $('model-count').textContent = String(state.residents.length);
   const activeRoom = state.rooms.find((room) => room.id === state.selected);
   for (const model of state.residents) {
-    for (const incognito of [false, true]) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = `room-item model-item${incognito ? ' incognito-item' : ''}${activeRoom?.members.length === 1 && activeRoom.members[0] === model.key && activeRoom.incognito === incognito ? ' active' : ''}`;
-      button.addEventListener('click', () => incognito ? openIncognito(model.key) : openSolo(model.key));
-      const icon = document.createElement('span');
-      icon.className = 'room-icon';
-      addResidentIcon(icon, model);
-      const copy = document.createElement('span');
-      copy.className = 'room-copy';
-      const title = document.createElement('strong');
-      title.textContent = incognito ? `${modelName(model)} · 无痕` : modelName(model);
-      const sub = document.createElement('small');
-      sub.textContent = incognito ? '无痕 · 仅当前运行期间' : `${model.provider} · ${model.key} · 有痕`;
-      copy.append(title, sub);
-      const online = document.createElement('span');
-      online.className = 'online-indicator';
-      online.title = '在线';
-      button.append(icon, copy, online);
-      models.append(button);
-    }
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `room-item model-item${activeRoom?.members.length === 1 && activeRoom.members[0] === model.key && activeRoom.incognito === state.incognitoMode ? ' active' : ''}`;
+    button.addEventListener('click', () => openSolo(model.key));
+    const icon = document.createElement('span');
+    icon.className = 'room-icon';
+    addResidentIcon(icon, model);
+    const copy = document.createElement('span');
+    copy.className = 'room-copy';
+    const title = document.createElement('strong');
+    title.textContent = modelName(model);
+    const sub = document.createElement('small');
+    sub.textContent = state.incognitoMode ? `${model.provider} · ${model.key} · 无痕` : `${model.provider} · ${model.key} · 有痕`;
+    copy.append(title, sub);
+    const online = document.createElement('span');
+    online.className = 'online-indicator';
+    online.title = '在线';
+    button.append(icon, copy, online);
+    models.append(button);
   }
   if (!state.residents.length) {
     const empty = document.createElement('div');
@@ -153,35 +155,109 @@ function renderSidebar() {
     empty.textContent = '还没有群聊';
     groups.append(empty);
   }
+}
 
+function archiveFilterParts(kind) {
+  return { trigger: $(`archive-${kind}-filter`), menu: $(`archive-${kind}-options`) };
+}
+
+function setArchiveFilterValue(kind, value) {
+  const { trigger, menu } = archiveFilterParts(kind);
+  const options = [...menu.querySelectorAll('[role="option"]')];
+  const selected = options.find((option) => option.dataset.value === value) || options[0];
+  if (!selected) return;
+  trigger.dataset.value = selected.dataset.value;
+  trigger.querySelector('.archive-filter-text').textContent = selected.textContent;
+  trigger.setAttribute('aria-label', `${kind === 'type' ? '聊天类型' : '模型筛选'}：${selected.textContent}`);
+  for (const option of options) option.setAttribute('aria-selected', String(option === selected));
+}
+
+function closeArchiveFilters(refocus = false) {
+  let openTrigger = null;
+  for (const kind of ['type', 'member']) {
+    const { trigger, menu } = archiveFilterParts(kind);
+    if (trigger.getAttribute('aria-expanded') === 'true') openTrigger = trigger;
+    trigger.setAttribute('aria-expanded', 'false');
+    menu.classList.add('hidden');
+  }
+  if (refocus) openTrigger?.focus();
+  return Boolean(openTrigger);
+}
+
+function openArchiveFilter(kind, focusLast = false) {
+  closeArchiveFilters();
+  const { trigger, menu } = archiveFilterParts(kind);
+  trigger.setAttribute('aria-expanded', 'true');
+  menu.classList.remove('hidden');
+  const options = [...menu.querySelectorAll('[role="option"]')];
+  (focusLast ? options.at(-1) : options.find((option) => option.getAttribute('aria-selected') === 'true') || options[0])?.focus();
+}
+
+function renderArchivedRooms() {
   const archive = $('archive-list');
   archive.replaceChildren();
   const archivedRooms = state.rooms.filter((room) => room.archived);
   $('archive-count').textContent = String(archivedRooms.length);
-  for (const room of [...archivedRooms].reverse()) {
+  const modelFilter = $('archive-member-filter');
+  const previousModel = modelFilter.dataset.value;
+  const memberKeys = [...new Set(archivedRooms.flatMap((room) => room.members))].sort();
+  const modelMenu = $('archive-member-options');
+  modelMenu.replaceChildren();
+  for (const key of ['all', ...memberKeys]) {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'archive-filter-option';
+    option.setAttribute('role', 'option');
+    option.tabIndex = -1;
+    option.dataset.value = key;
+    option.textContent = key === 'all' ? '全部模型' : modelName(state.residents.find((resident) => resident.key === key) || { model: key });
+    modelMenu.append(option);
+  }
+  setArchiveFilterValue('member', memberKeys.includes(previousModel) ? previousModel : 'all');
+  const query = $('archive-search').value.trim().toLocaleLowerCase();
+  const type = $('archive-type-filter').dataset.value;
+  const member = modelFilter.dataset.value;
+  const visibleRooms = archivedRooms.filter((room) => {
+    if (type === 'solo' && room.members.length !== 1) return false;
+    if (type === 'group' && room.members.length < 2) return false;
+    if (member !== 'all' && !room.members.includes(member)) return false;
+    if (!query) return true;
+    return room.name.toLocaleLowerCase().includes(query)
+      || room.members.some((key) => key.toLocaleLowerCase().includes(query))
+      || room.messages.some((message) => message.text.toLocaleLowerCase().includes(query));
+  });
+  $('archive-visible-count').textContent = `${visibleRooms.length} 个聊天`;
+  for (const room of [...visibleRooms].sort((a, b) => b.last_activity_ms - a.last_activity_ms)) {
+    const row = document.createElement('div');
+    row.className = 'archive-chat-row';
+    row.setAttribute('role', 'listitem');
+    const model = roomModel(room);
+    const copy = document.createElement('div');
+    copy.className = 'archive-chat-copy';
+    const title = document.createElement('strong');
+    const latestUserMessage = [...room.messages].reverse().find((message) => message.role === 'user' && message.text.trim());
+    title.textContent = room.members.length === 1 ? latestUserMessage?.text || room.name : room.name;
+    title.title = title.textContent;
+    const details = document.createElement('small');
+    details.className = 'archive-chat-meta';
+    const date = room.messages.at(-1)?.created_at || room.last_activity_ms;
+    const when = date ? new Date(date).toLocaleString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '尚无消息';
+    const members = model ? modelName(model) : room.members.length === 1 ? room.members[0] : `${room.members.length} 个模型`;
+    details.textContent = `${when} · ${members} · ${room.messages.length} 条消息`;
+    copy.append(title, details);
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `room-item${room.id === state.selected ? ' active' : ''}`;
-    button.addEventListener('click', () => selectRoom(room.id));
-    const icon = document.createElement('span');
-    icon.className = 'room-icon';
-    const model = roomModel(room);
-    if (model) addResidentIcon(icon, model);
-    else icon.textContent = '▣';
-    const copy = document.createElement('span');
-    copy.className = 'room-copy';
-    const title = document.createElement('strong');
-    title.textContent = room.name;
-    const sub = document.createElement('small');
-    sub.textContent = `${room.messages.length} 条消息 · #${room.id}`;
-    copy.append(title, sub);
-    button.append(icon, copy);
-    archive.append(button);
+    button.className = 'settings-unarchive';
+    button.textContent = '取消归档';
+    button.setAttribute('aria-label', `取消归档 ${room.name}`);
+    button.addEventListener('click', () => unarchiveRoom(room.id, button));
+    row.append(copy, button);
+    archive.append(row);
   }
-  if (!archivedRooms.length) {
+  if (!visibleRooms.length) {
     const empty = document.createElement('div');
-    empty.className = 'sidebar-empty';
-    empty.textContent = '暂无归档会话';
+    empty.className = 'archive-chat-empty';
+    empty.textContent = archivedRooms.length ? '没有匹配的归档聊天' : '暂无归档聊天';
     archive.append(empty);
   }
 }
@@ -198,7 +274,7 @@ function renderMessages(room) {
     row.className = `message ${message.role}`;
     const icon = document.createElement('div');
     icon.className = 'message-icon';
-    if (message.role === 'agent' && isOpenAiModel(state.residents.find((model) => model.key === message.author))) {
+    if ((message.role === 'agent' || message.role === 'summary') && isOpenAiModel(state.residents.find((model) => model.key === message.author))) {
       addGptIcon(icon);
     } else {
       icon.textContent = message.role === 'user' ? '你' : message.role === 'error' ? '!' : message.role === 'summary' ? '✓' : '✳';
@@ -213,7 +289,7 @@ function renderMessages(room) {
     if (message.role === 'summary') {
       const tag = document.createElement('span');
       tag.className = 'summary-tag';
-      tag.textContent = '协作总结';
+      tag.textContent = '给你的答复';
       meta.append(tag);
     }
     const text = document.createElement('div');
@@ -270,8 +346,7 @@ function renderRoom(room) {
   $('composer-wrap').classList.remove('hidden');
   $('room-title').textContent = title;
   $('mode-pill').textContent = room.incognito ? '无痕对话' : room.members.length === 1 ? '单 Agent 任务' : `多 Agent 协作 · ${room.members.length}`;
-  $('archive-room').classList.toggle('hidden', room.incognito);
-  $('archive-room').textContent = room.archived ? '取消归档' : '归档';
+  $('archive-room').classList.toggle('hidden', room.incognito || room.archived);
   $('composer-note').textContent = room.incognito ? '无痕会话不会保存到本地历史，也不会提取长期记忆。'
     : room.members.length === 1
     ? '同一个 Resident 会记得它参与的私聊和群聊。重要结论请核实。'
@@ -288,14 +363,43 @@ function renderRoom(room) {
 async function refreshRooms() {
   state.rooms = await request('/api/rooms');
   renderSidebar();
+  renderArchivedRooms();
 }
 
 async function refreshRoom(id = state.selected) {
   if (id == null) return;
   const room = await request(`/api/rooms/${id}`);
   if (state.selected !== id) return;
+  if (room.archived) {
+    clearSelectedRoom();
+    await refreshRooms();
+    return;
+  }
   renderRoom(room);
   await refreshRooms();
+}
+
+function clearSelectedRoom() {
+  if (state.events) { state.events.close(); state.events = null; }
+  clearInterval(heartbeatTimer);
+  if (state.selected) {
+    request(`/api/rooms/${state.selected}/leave`, { method: 'POST', body: JSON.stringify({ client: clientId }) }).catch(() => {});
+  }
+  state.selected = null;
+  state.room = null;
+  state.files = [];
+  state.fingerprint = '';
+  sessionStorage.removeItem('norma-room-id');
+  renderPendingFiles();
+  $('message-input').value = '';
+  $('message-input').style.height = '';
+  $('welcome').classList.remove('hidden');
+  $('conversation').classList.add('hidden');
+  $('composer-wrap').classList.add('hidden');
+  $('archive-room').classList.add('hidden');
+  $('room-title').textContent = '开始一次对话';
+  $('mode-pill').textContent = '选择在线模型';
+  renderSidebar();
 }
 
 async function selectRoom(id) {
@@ -324,15 +428,32 @@ async function selectRoom(id) {
 }
 
 $('archive-room').addEventListener('click', async () => {
-  if (!state.room) return;
+  if (!state.room || state.room.archived) return;
+  const id = state.room.id;
   try {
-    const room = await request(`/api/rooms/${state.room.id}/archive`, {
-      method: 'POST', body: JSON.stringify({ archived: !state.room.archived }),
+    await request(`/api/rooms/${id}/archive`, {
+      method: 'POST', body: JSON.stringify({ archived: true }),
     });
-    renderRoom(room);
+    if (state.selected === id) clearSelectedRoom();
     await refreshRooms();
+    toast('已归档，可在设置中取消归档');
   } catch (error) { toast(error.message); }
 });
+
+async function unarchiveRoom(id, button) {
+  button.disabled = true;
+  try {
+    await request(`/api/rooms/${id}/archive`, {
+      method: 'POST', body: JSON.stringify({ archived: false }),
+    });
+    await refreshRooms();
+    closeSettings();
+    await selectRoom(id);
+    if (state.selected === id && state.room) $('message-input').focus();
+    toast('已取消归档');
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; }
+}
 
 window.addEventListener('pagehide', () => {
   if (!state.selected) return;
@@ -341,16 +462,8 @@ window.addEventListener('pagehide', () => {
 
 async function openSolo(key) {
   try {
-    const room = await request(`/api/rooms/solo/${encodeURIComponent(key)}`, { method: 'POST' });
-    await refreshRooms();
-    await selectRoom(room.id);
-    $('message-input').focus();
-  } catch (error) { toast(error.message); }
-}
-
-async function openIncognito(key) {
-  try {
-    const room = await request(`/api/rooms/incognito/${encodeURIComponent(key)}`, { method: 'POST' });
+    const route = state.incognitoMode ? 'incognito' : 'solo';
+    const room = await request(`/api/rooms/${route}/${encodeURIComponent(key)}`, { method: 'POST' });
     await refreshRooms();
     await selectRoom(room.id);
     $('message-input').focus();
@@ -388,7 +501,7 @@ function selectedMembers() {
 function updateModePreview() {
   const count = selectedMembers().length;
   $('selected-count').textContent = `已选 ${count} 个`;
-  $('mode-preview').textContent = count < 2 ? '至少选择 2 个不同模型' : `${count} 个 Agent 协作`;
+  $('mode-preview').textContent = count < 2 ? '至少选择 2 个不同模型' : `${count} 个 Agent 协作${state.incognitoMode ? ' · 无痕' : ''}`;
   $('create-button').disabled = count < 2;
 }
 
@@ -437,26 +550,94 @@ function openModal() {
 }
 function closeModal() { $('modal-backdrop').classList.add('hidden'); }
 function openSettings() {
-  $('settings-backdrop').classList.remove('hidden');
+  $('archive-search').value = '';
+  setArchiveFilterValue('type', 'all');
+  setArchiveFilterValue('member', 'all');
+  $('settings-page').classList.remove('hidden');
+  showSettingsView('archives');
+  refreshRooms().catch((error) => toast(error.message));
   refreshMemory().catch((error) => toast(error.message));
   $('close-settings').focus();
 }
 function closeSettings() {
-  $('settings-backdrop').classList.add('hidden');
+  closeArchiveFilters();
+  $('settings-page').classList.add('hidden');
   $('settings-button').focus();
 }
 
+function showSettingsView(view) {
+  closeArchiveFilters();
+  const archives = view === 'archives';
+  $('settings-archives-view').classList.toggle('hidden', !archives);
+  $('settings-preferences-view').classList.toggle('hidden', archives);
+  $('settings-page').querySelector('.settings-main').scrollTop = 0;
+  for (const [button, active] of [[$('settings-nav-archives'), archives], [$('settings-nav-preferences'), !archives]]) {
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  }
+  if (archives) renderArchivedRooms();
+  else refreshMemory().catch((error) => toast(error.message));
+}
+
 $('new-room').addEventListener('click', openModal);
+$('incognito-mode').checked = state.incognitoMode;
+$('incognito-mode').addEventListener('change', (event) => {
+  state.incognitoMode = event.target.checked;
+  try { localStorage.setItem('norma-incognito-mode', String(state.incognitoMode)); } catch { /* Storage may be unavailable. */ }
+  renderSidebar();
+  updateModePreview();
+  toast(state.incognitoMode ? '新开的单聊和群聊将使用无痕模式' : '新开的单聊和群聊将保存本地历史');
+});
 $('settings-button').addEventListener('click', openSettings);
 $('close-settings').addEventListener('click', closeSettings);
-$('settings-backdrop').addEventListener('click', (event) => { if (event.target === $('settings-backdrop')) closeSettings(); });
+$('settings-page').addEventListener('click', (event) => { if (event.target === $('settings-page')) closeSettings(); });
+$('settings-nav-archives').addEventListener('click', () => showSettingsView('archives'));
+$('settings-nav-preferences').addEventListener('click', () => showSettingsView('preferences'));
+$('archive-search').addEventListener('input', renderArchivedRooms);
+for (const kind of ['type', 'member']) {
+  const { trigger, menu } = archiveFilterParts(kind);
+  trigger.addEventListener('click', () => {
+    if (trigger.getAttribute('aria-expanded') === 'true') closeArchiveFilters();
+    else openArchiveFilter(kind);
+  });
+  trigger.addEventListener('keydown', (event) => {
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault();
+      openArchiveFilter(kind, event.key === 'ArrowUp' || event.key === 'End');
+    }
+  });
+  menu.addEventListener('click', (event) => {
+    const option = event.target.closest('[role="option"]');
+    if (!option || !menu.contains(option)) return;
+    setArchiveFilterValue(kind, option.dataset.value);
+    closeArchiveFilters(true);
+    renderArchivedRooms();
+  });
+  menu.addEventListener('keydown', (event) => {
+    const options = [...menu.querySelectorAll('[role="option"]')];
+    const current = options.indexOf(document.activeElement);
+    let next = current;
+    if (event.key === 'ArrowDown') next = (current + 1) % options.length;
+    else if (event.key === 'ArrowUp') next = (current - 1 + options.length) % options.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = options.length - 1;
+    else if (event.key === 'Tab') { closeArchiveFilters(); return; }
+    else return;
+    event.preventDefault();
+    options[next]?.focus();
+  });
+}
+document.addEventListener('pointerdown', (event) => {
+  if (!event.target.closest('.archive-filter')) closeArchiveFilters();
+});
 $('welcome-create').addEventListener('click', () => {
   if (state.residents[0]) openSolo(state.residents[0].key);
   else toast('当前没有在线的 LLM Resident');
 });
 $('close-modal').addEventListener('click', closeModal);
 $('modal-backdrop').addEventListener('click', (event) => { if (event.target === $('modal-backdrop')) closeModal(); });
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { closeModal(); if (!$('settings-backdrop').classList.contains('hidden')) closeSettings(); } });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { if (closeArchiveFilters(true)) { event.preventDefault(); return; } closeModal(); if (!$('settings-page').classList.contains('hidden')) closeSettings(); } });
 $('menu-toggle').addEventListener('click', () => $('sidebar').classList.toggle('open'));
 
 $('create-form').addEventListener('submit', async (event) => {
@@ -465,7 +646,7 @@ $('create-form').addEventListener('submit', async (event) => {
   if (members.length < 2) return;
   $('create-button').disabled = true;
   try {
-    const room = await request('/api/rooms', { method: 'POST', body: JSON.stringify({ name: $('new-room-name').value, members, incognito: $('group-incognito').checked }) });
+    const room = await request('/api/rooms', { method: 'POST', body: JSON.stringify({ name: $('new-room-name').value, members, incognito: state.incognitoMode }) });
     closeModal();
     $('create-form').reset();
     await refreshRooms();
@@ -556,7 +737,8 @@ $('message-input').addEventListener('input', (event) => {
     await Promise.all([loadResidents(), refreshRooms(), refreshMemory()]);
     const saved = Number(sessionStorage.getItem('norma-room-id'));
     const savedRoom = state.rooms.find((room) => room.id === saved);
-    if (savedRoom) await selectRoom(savedRoom.id);
+    if (savedRoom && !savedRoom.archived) await selectRoom(savedRoom.id);
+    else if (savedRoom?.archived) sessionStorage.removeItem('norma-room-id');
   } catch (error) { toast(error.message); }
 })();
 

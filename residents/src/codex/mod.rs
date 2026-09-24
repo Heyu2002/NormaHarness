@@ -30,11 +30,12 @@ use tokio::{
 };
 
 use crate::{
-    llm::{self, LlmOrigin, LlmRoomKind, MemoryTrigger},
+    llm::{self, LlmChatTurnKind, LlmOrigin, LlmRoomKind, MemoryTrigger},
     media::MediaAsset,
     memory::{ExtractedMemory, MemoryManager},
     tools::{
-        self, MediaPublishRequest, MediaPublishResult, RoomMembersResult, RoomMembersToolRequest,
+        self, ChatContextResult, ChatContextToolRequest, MediaPublishRequest, MediaPublishResult,
+        RoomMembersResult, RoomMembersToolRequest, ToolCatalogRequest, ToolCatalogResult,
     },
 };
 use app_server::{AppServerError, CodexAppServer};
@@ -129,14 +130,14 @@ struct QueueMailbox {
     queue: mpsc::Sender<ResidentEvent>,
     accepting: AtomicBool,
     pending_tools: StdMutex<HashMap<String, oneshot::Sender<RoomMembersResult>>>,
+    pending_context: StdMutex<HashMap<String, oneshot::Sender<ChatContextResult>>>,
+    pending_catalog: StdMutex<HashMap<String, oneshot::Sender<ToolCatalogResult>>>,
     pending_media: StdMutex<HashMap<String, oneshot::Sender<MediaPublishResult>>>,
 }
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 struct ConversationState {
     thread_id: Option<String>,
-    last_seen_context_id: u64,
-    last_memory_revision: u64,
 }
 
 fn load_conversations(path: &PathBuf) -> io::Result<HashMap<u64, ConversationState>> {
@@ -240,6 +241,44 @@ impl Mailbox for QueueMailbox {
                 }
                 return Ok(());
             }
+            if message.message().kind().as_str() == tools::CHAT_CONTEXT_TOOL_RESULT_KIND {
+                if message.source().as_str() != tools::TOOL_RESIDENT_KEY {
+                    return Err(MailboxError::new(
+                        "chat-context result came from another Resident",
+                    ));
+                }
+                let result: ChatContextResult =
+                    serde_json::from_value(message.message().payload().clone()).map_err(
+                        |error| MailboxError::new(format!("invalid chat-context result: {error}")),
+                    )?;
+                if let Some(reply) = self
+                    .pending_context
+                    .lock()
+                    .expect("context pending mutex")
+                    .remove(&result.call_id)
+                {
+                    let _ = reply.send(result);
+                }
+                return Ok(());
+            }
+            if message.message().kind().as_str() == tools::TOOL_CATALOG_RESULT_KIND {
+                if message.source().as_str() != tools::TOOL_RESIDENT_KEY {
+                    return Err(MailboxError::new("tool catalog came from another Resident"));
+                }
+                let result: ToolCatalogResult = serde_json::from_value(
+                    message.message().payload().clone(),
+                )
+                .map_err(|error| MailboxError::new(format!("invalid tool catalog: {error}")))?;
+                if let Some(reply) = self
+                    .pending_catalog
+                    .lock()
+                    .expect("catalog pending mutex")
+                    .remove(&result.request_id)
+                {
+                    let _ = reply.send(result);
+                }
+                return Ok(());
+            }
         }
         self.queue
             .try_send(event)
@@ -247,10 +286,9 @@ impl Mailbox for QueueMailbox {
     }
 }
 
-/// The concrete service stored by RDF. The worker and Codex child are owned
-/// by [`CodexResidentRuntime`], so RDF never controls their lifecycle.
-pub struct CodexResident {
-    _instance_lease: CodexInstanceLease,
+/// Shared Codex execution state. This is not a Resident and is never registered
+/// with RDF; each public Resident owns one independent instance of it.
+struct CodexResidentCore {
     descriptor: ResidentDescriptor,
     mailbox: Arc<QueueMailbox>,
     registration: RegistrationSender,
@@ -260,37 +298,23 @@ pub struct CodexResident {
     inbound_gate: Arc<dyn Gate>,
 }
 
-impl std::fmt::Debug for CodexResident {
+impl std::fmt::Debug for CodexResidentCore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("CodexResident")
+            .debug_struct("CodexResidentCore")
             .field("descriptor", &self.descriptor)
             .field("instance_id", &self.instance_id.get())
             .finish_non_exhaustive()
     }
 }
 
-impl Resident for CodexResident {
-    fn descriptor(&self) -> ResidentDescriptor {
-        self.descriptor.clone()
-    }
-
-    fn mailbox(&self) -> MailboxAddress {
-        self.mailbox.clone()
-    }
-
-    fn inbound_gate(&self) -> Option<Arc<dyn Gate>> {
-        Some(self.inbound_gate.clone())
-    }
-}
-
-impl CodexResident {
-    /// Prepare the Codex process before advertising this Resident in RDF.
-    pub async fn launch(
+impl CodexResidentCore {
+    async fn prepare(
         mut config: CodexResidentConfig,
         registration: RegistrationSender,
         messages: MessageSender,
-    ) -> Result<CodexResidentRuntime, CodexResidentError> {
+    ) -> Result<(Arc<Self>, mpsc::Receiver<ResidentEvent>, CodexAppServer), CodexResidentError>
+    {
         if config.mailbox_capacity == 0 {
             return Err(CodexResidentError::Config(
                 "mailbox_capacity must be positive".into(),
@@ -307,13 +331,11 @@ impl CodexResident {
                 config.cwd.display()
             )));
         }
-        let instance_lease = CodexInstanceLease::acquire()?;
         let server = CodexAppServer::start(&config.codex_program, &config.cwd)
             .await
             .map_err(|error| CodexResidentError::AppServer(error.to_string()))?;
         let (queue, receiver) = mpsc::channel(config.mailbox_capacity);
         let resident = Arc::new(Self {
-            _instance_lease: instance_lease,
             descriptor: ResidentDescriptor::new(
                 config.key.clone(),
                 [
@@ -325,6 +347,8 @@ impl CodexResident {
                 queue,
                 accepting: AtomicBool::new(true),
                 pending_tools: StdMutex::new(HashMap::new()),
+                pending_context: StdMutex::new(HashMap::new()),
+                pending_catalog: StdMutex::new(HashMap::new()),
                 pending_media: StdMutex::new(HashMap::new()),
             }),
             registration,
@@ -333,21 +357,7 @@ impl CodexResident {
             instance_id: OnceLock::new(),
             inbound_gate: Arc::new(llm::LlmContextGate),
         });
-        let receipt = resident.registration.register(resident.clone()).await?;
-        resident
-            .instance_id
-            .set(receipt.instance_id())
-            .expect("Codex Resident registers only once");
-        let (shutdown, shutdown_rx) = oneshot::channel();
-        let worker_resident = resident.clone();
-        let worker = tokio::spawn(async move {
-            worker_resident.run(receiver, server, shutdown_rx).await;
-        });
-        Ok(CodexResidentRuntime {
-            resident,
-            shutdown: Some(shutdown),
-            worker,
-        })
+        Ok((resident, receiver, server))
     }
 
     async fn run(
@@ -441,6 +451,12 @@ impl CodexResident {
         if let Err(error) = request.validate() {
             return CodexTurnResult::failed(request.request_id, error);
         }
+        if request.origin.is_some() && request.source_resident.as_deref() != Some("chat.rooms") {
+            return CodexTurnResult::failed(
+                request.request_id,
+                "chat origin must come from chat.rooms",
+            );
+        }
         if request.thread_id.as_ref().is_some_and(|thread_id| {
             conversation
                 .thread_id
@@ -454,40 +470,9 @@ impl CodexResident {
         }
         let mut turn_request = request.clone();
         turn_request.thread_id = conversation.thread_id.clone().or(request.thread_id.clone());
-        turn_request.prompt = prompt_with_new_context(
-            &request,
-            conversation.last_seen_context_id,
-            self.config.key.as_str(),
-        );
-        let mut memory_revision = None;
-        if let Some(memory) = self.config.memory.as_ref().filter(|_| {
-            !request
-                .origin
-                .as_ref()
-                .is_some_and(|origin| origin.incognito)
-        }) {
-            match memory.hot() {
-                Ok((revision, hot)) if revision != conversation.last_memory_revision => {
-                    if !hot.is_empty() {
-                        turn_request.prompt = format!(
-                            "当前 Resident 的长期记忆如下。它们可能已过时，若与当前用户消息冲突，以当前消息为准。\n{}\n\n{}",
-                            hot.iter()
-                                .enumerate()
-                                .map(|(index, fact)| format!("{}. {fact}", index + 1))
-                                .collect::<Vec<_>>()
-                                .join("\n"),
-                            turn_request.prompt,
-                        );
-                    }
-                    memory_revision = Some(revision);
-                }
-                Ok(_) => {}
-                Err(error) => eprintln!("could not read Resident memory: {error}"),
-            }
+        if let (Some(origin), Some(kind)) = (&request.origin, request.chat_turn_kind) {
+            turn_request.prompt = chat_turn_notice(origin, kind, &request.prompt);
         }
-        turn_request
-            .context
-            .retain(|event| event.id > conversation.last_seen_context_id);
         if server.is_none() {
             match CodexAppServer::start(&self.config.codex_program, &self.config.cwd).await {
                 Ok(restarted) => *server = Some(restarted),
@@ -512,24 +497,11 @@ impl CodexResident {
         {
             eprintln!("provider thread cannot be resumed; rebuilding from local room history");
             conversation.thread_id = None;
-            conversation.last_seen_context_id = 0;
             turn_request.thread_id = None;
-            turn_request.context = request.context.clone();
             turn_request.prompt = format!(
-                "之前的模型会话无法恢复。以下是本地保存的完整历史，请在当前房间继续对话。历史消息：{}\n当前请求：{}",
-                serde_json::to_string(&request.context).unwrap_or_default(),
-                request.prompt,
+                "之前的模型会话无法恢复。请先调用 read_chat_context 读取当前聊天室的历史，再继续回答当前请求。\n\n{}",
+                turn_request.prompt,
             );
-            if memory_revision.is_some() {
-                if let Some(memory) = &self.config.memory {
-                    if let Ok((_, hot)) = memory.hot() {
-                        if !hot.is_empty() {
-                            turn_request.prompt =
-                                format!("长期记忆：{}\n{}", hot.join("\n"), turn_request.prompt);
-                        }
-                    }
-                }
-            }
             result = server
                 .as_mut()
                 .expect("server still active")
@@ -547,21 +519,6 @@ impl CodexResident {
             Ok(result) => {
                 if let Some(thread_id) = &result.thread_id {
                     conversation.thread_id = Some(thread_id.clone());
-                }
-                if result.status == CodexTurnStatus::Completed {
-                    if let Some(revision) = memory_revision {
-                        conversation.last_memory_revision = revision;
-                    }
-                    conversation.last_seen_context_id = request
-                        .context
-                        .iter()
-                        .map(|event| event.id)
-                        .max()
-                        .unwrap_or(conversation.last_seen_context_id)
-                        .max(conversation.last_seen_context_id);
-                }
-                if result.compacted {
-                    conversation.last_memory_revision = 0;
                 }
                 result
             }
@@ -615,6 +572,7 @@ impl CodexResident {
             prompt,
             origin: None,
             source_resident: Some("chat.rooms".into()),
+            chat_turn_kind: None,
             thread_id: None,
             context: events.clone(),
         };
@@ -720,6 +678,120 @@ impl CodexResident {
         }
     }
 
+    async fn load_tool_catalog(&self, request_id: &str) -> Result<Vec<Value>, String> {
+        let (reply, receiver) = oneshot::channel();
+        self.mailbox
+            .pending_catalog
+            .lock()
+            .expect("catalog pending mutex")
+            .insert(request_id.to_owned(), reply);
+        let request = ToolCatalogRequest {
+            request_id: request_id.to_owned(),
+        };
+        let flow = FlowMessage::new(
+            MessageKind::new(tools::TOOL_CATALOG_REQUEST_KIND).expect("static kind"),
+            serde_json::to_value(request).expect("serializable catalog request"),
+        );
+        let target = ResidentKey::new(tools::TOOL_RESIDENT_KEY).expect("static key");
+        let instance_id = *self.instance_id.get().expect("registered");
+        if let Err(error) = self.messages.send(instance_id, &target, flow).await {
+            self.mailbox
+                .pending_catalog
+                .lock()
+                .expect("catalog pending mutex")
+                .remove(request_id);
+            return Err(error.to_string());
+        }
+        let result = receiver.await;
+        self.mailbox
+            .pending_catalog
+            .lock()
+            .expect("catalog pending mutex")
+            .remove(request_id);
+        match result {
+            Ok(result) if result.tools.is_empty() => Err("tool catalog is empty".into()),
+            Ok(result) => Ok(result.tools),
+            Err(_) => Err("tool catalog reply channel closed".into()),
+        }
+    }
+
+    fn read_resident_memory_tool(&self, origin: Option<&LlmOrigin>) -> Result<Value, String> {
+        let origin = origin.ok_or("memory tool requires a chat origin")?;
+        if origin.incognito {
+            return Err("long-term memory is unavailable in incognito rooms".into());
+        }
+        let memory = self
+            .config
+            .memory
+            .as_ref()
+            .ok_or("long-term memory is disabled")?;
+        let (_, facts) = memory.hot().map_err(|error| error.to_string())?;
+        Ok(json!({"facts": facts}))
+    }
+
+    async fn invoke_chat_context_tool(
+        &self,
+        turn: &CodexTurnRequest,
+        call_id: &str,
+        scope_all: bool,
+        before_message_id: Option<u64>,
+        limit: usize,
+    ) -> Result<ChatContextResult, String> {
+        let origin = turn
+            .origin
+            .as_ref()
+            .ok_or("chat-context tool requires a chat origin")?;
+        if call_id.trim().is_empty() || !(1..=200).contains(&limit) {
+            return Err("invalid chat-context tool arguments".into());
+        }
+        let mut visible_through = HashMap::new();
+        for event in &turn.context {
+            visible_through
+                .entry(event.room_id)
+                .and_modify(|last: &mut u64| *last = (*last).max(event.id))
+                .or_insert(event.id);
+        }
+        let request = ChatContextToolRequest {
+            call_id: call_id.to_owned(),
+            room_id: origin.room_id,
+            visible_through,
+            scope_all,
+            before_message_id,
+            limit,
+        };
+        let (reply, receiver) = oneshot::channel();
+        self.mailbox
+            .pending_context
+            .lock()
+            .expect("context pending mutex")
+            .insert(call_id.to_owned(), reply);
+        let flow = FlowMessage::new(
+            MessageKind::new(tools::CHAT_CONTEXT_TOOL_REQUEST_KIND).expect("static kind"),
+            serde_json::to_value(request).expect("serializable context request"),
+        );
+        let target = ResidentKey::new(tools::TOOL_RESIDENT_KEY).expect("static key");
+        let instance_id = *self.instance_id.get().expect("registered");
+        if let Err(error) = self.messages.send(instance_id, &target, flow).await {
+            self.mailbox
+                .pending_context
+                .lock()
+                .expect("context pending mutex")
+                .remove(call_id);
+            return Err(error.to_string());
+        }
+        let result = receiver.await;
+        self.mailbox
+            .pending_context
+            .lock()
+            .expect("context pending mutex")
+            .remove(call_id);
+        match result {
+            Ok(result) if result.room_id == origin.room_id => Ok(result),
+            Ok(_) => Err("chat-context result belongs to another room".into()),
+            Err(_) => Err("chat-context reply channel closed".into()),
+        }
+    }
+
     async fn invoke_publish_media_tool(
         &self,
         request: MediaPublishRequest,
@@ -765,36 +837,135 @@ impl CodexResident {
     }
 }
 
-fn prompt_with_new_context(
-    request: &CodexTurnRequest,
-    last_seen_context_id: u64,
-    resident_key: &str,
-) -> String {
-    let mut unseen = request
-        .context
-        .iter()
-        .filter(|event| event.id > last_seen_context_id)
-        .filter(|event| {
-            !(last_seen_context_id != 0
-                && (event.role == "agent" || event.role == "summary")
-                && event.author == resident_key)
-        })
-        .collect::<Vec<_>>();
-    unseen.sort_by_key(|event| event.id);
-    if request.origin.is_none() && unseen.is_empty() {
-        return request.prompt.clone();
+/// Original Codex Resident. Only one instance of this type may be active.
+pub struct CodexResident {
+    _instance_lease: CodexInstanceLease,
+    core: Arc<CodexResidentCore>,
+}
+
+impl std::fmt::Debug for CodexResident {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CodexResident")
+            .field("core", &self.core)
+            .finish_non_exhaustive()
     }
-    let envelope = json!({
-        "source": {
-            "resident": request.source_resident,
-            "origin": request.origin,
-        },
-        "new_events": unseen,
-        "current_request": request.prompt,
-    });
+}
+
+impl Resident for CodexResident {
+    fn descriptor(&self) -> ResidentDescriptor {
+        self.core.descriptor.clone()
+    }
+
+    fn mailbox(&self) -> MailboxAddress {
+        self.core.mailbox.clone()
+    }
+
+    fn inbound_gate(&self) -> Option<Arc<dyn Gate>> {
+        Some(self.core.inbound_gate.clone())
+    }
+}
+
+impl CodexResident {
+    /// Prepare the Codex process before advertising this Resident in RDF.
+    pub async fn launch(
+        config: CodexResidentConfig,
+        registration: RegistrationSender,
+        messages: MessageSender,
+    ) -> Result<CodexResidentRuntime, CodexResidentError> {
+        let instance_lease = CodexInstanceLease::acquire()?;
+        let (core, receiver, server) =
+            CodexResidentCore::prepare(config, registration, messages).await?;
+        let resident = Arc::new(Self {
+            _instance_lease: instance_lease,
+            core: core.clone(),
+        });
+        let receipt = core.registration.register(resident.clone()).await?;
+        core.instance_id
+            .set(receipt.instance_id())
+            .expect("Codex Resident registers only once");
+        let (shutdown, shutdown_rx) = oneshot::channel();
+        let worker = tokio::spawn(core.run(receiver, server, shutdown_rx));
+        Ok(CodexResidentRuntime {
+            resident,
+            shutdown: Some(shutdown),
+            worker,
+        })
+    }
+}
+
+/// Separate Resident for GPT-5.6 Luna, with its own app-server and mailbox.
+pub struct Codex56LunaResident {
+    core: Arc<CodexResidentCore>,
+}
+
+impl std::fmt::Debug for Codex56LunaResident {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Codex56LunaResident")
+            .field("core", &self.core)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Resident for Codex56LunaResident {
+    fn descriptor(&self) -> ResidentDescriptor {
+        self.core.descriptor.clone()
+    }
+
+    fn mailbox(&self) -> MailboxAddress {
+        self.core.mailbox.clone()
+    }
+
+    fn inbound_gate(&self) -> Option<Arc<dyn Gate>> {
+        Some(self.core.inbound_gate.clone())
+    }
+}
+
+impl Codex56LunaResident {
+    pub async fn launch(
+        mut config: CodexResidentConfig,
+        registration: RegistrationSender,
+        messages: MessageSender,
+    ) -> Result<Codex56LunaResidentRuntime, CodexResidentError> {
+        config.model = Some("gpt-5.6-luna".into());
+        let (core, receiver, server) =
+            CodexResidentCore::prepare(config, registration, messages).await?;
+        let resident = Arc::new(Self { core: core.clone() });
+        let receipt = core.registration.register(resident.clone()).await?;
+        core.instance_id
+            .set(receipt.instance_id())
+            .expect("GPT-5.6 Luna Resident registers only once");
+        let (shutdown, shutdown_rx) = oneshot::channel();
+        let worker = tokio::spawn(core.run(receiver, server, shutdown_rx));
+        Ok(Codex56LunaResidentRuntime {
+            resident,
+            shutdown: Some(shutdown),
+            worker,
+        })
+    }
+}
+
+fn chat_turn_notice(origin: &LlmOrigin, kind: LlmChatTurnKind, trigger: &str) -> String {
+    let place = if origin.kind == LlmRoomKind::Group {
+        "群聊"
+    } else {
+        "私聊"
+    };
+    let action = match kind {
+        LlmChatTurnKind::Direct => "有一条需要你回复的消息。",
+        LlmChatTurnKind::Contribution => "有一条需要你独立回复的消息；不要假设其他成员已回答。",
+        LlmChatTurnKind::Mention => trigger,
+    };
+    let routing = if origin.kind == LlmRoomKind::Group {
+        "若答案已完整，请以 @你 开头直接回答用户；需要其他成员继续时，可以 @对应成员。除非确实需要继续处理，否则不要随意 @。"
+    } else {
+        ""
+    };
     format!(
-        "你是同一个持续参与对话的 Resident。以下 JSON 是框架提供的上下文：source.origin 标明当前私聊或群聊及群名，new_events 是你上次处理后在你参与的房间发生的消息。按顺序理解事件，只在当前房间回复。附件图片已作为本轮图像输入提供；GIF 输入保留原动画供聊天室查看，模型收到首帧。需要知道当前群成员时调用 list_group_members 工具。若生成图片或 GIF，必须调用 publish_media 工具发布文件内容，只有工具成功返回后用户才能看见附件。\n{}",
-        envelope
+        "{place} {}（房间 ID {}）{action}请先调用 read_chat_context 读取本房间的消息，再作答。{routing}",
+        serde_json::to_string(&origin.room_name).expect("room name is serializable"),
+        origin.room_id,
     )
 }
 
@@ -818,7 +989,12 @@ impl std::fmt::Debug for CodexResidentRuntime {
 impl CodexResidentRuntime {
     #[must_use]
     pub fn instance_id(&self) -> ResidentInstanceId {
-        *self.resident.instance_id.get().expect("registered runtime")
+        *self
+            .resident
+            .core
+            .instance_id
+            .get()
+            .expect("registered runtime")
     }
 
     #[must_use]
@@ -828,12 +1004,68 @@ impl CodexResidentRuntime {
 
     pub async fn shutdown(mut self) -> Result<(), CodexResidentError> {
         let instance_id = self.instance_id();
-        self.resident.mailbox.close();
+        self.resident.core.mailbox.close();
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
         let worker_result = self.worker.await;
-        let unregister_result = self.resident.registration.unregister(instance_id).await;
+        let unregister_result = self
+            .resident
+            .core
+            .registration
+            .unregister(instance_id)
+            .await;
+        worker_result?;
+        unregister_result?;
+        Ok(())
+    }
+}
+
+/// Owner of the GPT-5.6 Luna Resident's execution.
+pub struct Codex56LunaResidentRuntime {
+    resident: Arc<Codex56LunaResident>,
+    shutdown: Option<oneshot::Sender<()>>,
+    worker: JoinHandle<()>,
+}
+
+impl std::fmt::Debug for Codex56LunaResidentRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Codex56LunaResidentRuntime")
+            .field("resident", &self.resident)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Codex56LunaResidentRuntime {
+    #[must_use]
+    pub fn instance_id(&self) -> ResidentInstanceId {
+        *self
+            .resident
+            .core
+            .instance_id
+            .get()
+            .expect("registered runtime")
+    }
+
+    #[must_use]
+    pub fn resident(&self) -> &Arc<Codex56LunaResident> {
+        &self.resident
+    }
+
+    pub async fn shutdown(mut self) -> Result<(), CodexResidentError> {
+        let instance_id = self.instance_id();
+        self.resident.core.mailbox.close();
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        let worker_result = self.worker.await;
+        let unregister_result = self
+            .resident
+            .core
+            .registration
+            .unregister(instance_id)
+            .await;
         worker_result?;
         unregister_result?;
         Ok(())
@@ -852,8 +1084,8 @@ pub fn turn_request_message(request: &CodexTurnRequest) -> FlowMessage {
 
 #[cfg(test)]
 mod tests {
-    use super::{CodexInstanceLease, CodexTurnRequest, prompt_with_new_context};
-    use crate::llm::LlmContextMessage;
+    use super::{CodexInstanceLease, chat_turn_notice};
+    use crate::llm::{LlmChatTurnKind, LlmOrigin, LlmRoomKind};
 
     #[test]
     fn a_second_codex_instance_is_rejected_until_the_first_is_released() {
@@ -864,57 +1096,21 @@ mod tests {
     }
 
     #[test]
-    fn one_resident_sees_new_messages_from_every_room_it_joins() {
-        let request = CodexTurnRequest {
-            request_id: "r1".into(),
-            prompt: "回答当前群聊".into(),
-            origin: Some(crate::llm::LlmOrigin {
-                kind: crate::llm::LlmRoomKind::Group,
-                room_id: 2,
-                room_name: "群聊".into(),
-                incognito: false,
-            }),
-            source_resident: Some("chat.rooms".into()),
-            thread_id: None,
-            context: vec![
-                LlmContextMessage {
-                    id: 3,
-                    room_id: 2,
-                    room_name: "群聊".into(),
-                    role: "agent".into(),
-                    author: "beta".into(),
-                    text: "群里的新信息".into(),
-                    created_at_ms: 0,
-                    attachments: Vec::new(),
-                },
-                LlmContextMessage {
-                    id: 1,
-                    room_id: 1,
-                    room_name: "私聊".into(),
-                    role: "user".into(),
-                    author: "你".into(),
-                    text: "私聊里的旧信息".into(),
-                    created_at_ms: 0,
-                    attachments: Vec::new(),
-                },
-                LlmContextMessage {
-                    id: 2,
-                    room_id: 1,
-                    room_name: "私聊".into(),
-                    role: "agent".into(),
-                    author: "codex".into(),
-                    text: "我已经答过".into(),
-                    created_at_ms: 0,
-                    attachments: Vec::new(),
-                },
-            ],
+    fn chat_notice_only_identifies_room_and_stage() {
+        let origin = LlmOrigin {
+            kind: LlmRoomKind::Group,
+            room_id: 7,
+            room_name: "设计讨论".into(),
+            incognito: false,
         };
-        let prompt = prompt_with_new_context(&request, 0, "codex");
-        assert!(prompt.find("私聊里的旧信息").unwrap() < prompt.find("群里的新信息").unwrap());
-        assert!(prompt.contains("我已经答过"));
-        assert!(prompt.contains("回答当前群聊"));
-        let prompt = prompt_with_new_context(&request, 1, "codex");
-        assert!(!prompt.contains("私聊里的旧信息"));
-        assert!(prompt.contains("群里的新信息"));
+        let notice = chat_turn_notice(&origin, LlmChatTurnKind::Contribution, "");
+        assert!(notice.contains("设计讨论"));
+        assert!(notice.contains("房间 ID 7"));
+        assert!(notice.contains("独立回复"));
+        assert!(notice.contains("read_chat_context"));
+        assert!(!notice.contains("current_request"));
+        assert!(notice.contains("@你"));
+        let mention = chat_turn_notice(&origin, LlmChatTurnKind::Mention, "alpha @ 了你。");
+        assert!(mention.contains("alpha @ 了你"));
     }
 }

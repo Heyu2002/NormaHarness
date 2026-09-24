@@ -307,18 +307,22 @@ The `norma-web` package serves a local chat website. It discovers Residents
 advertising the `llm` capability through RDF and lists online models directly
 in the sidebar. Clicking a model opens or reuses its one-to-one room. Group
 creation selects at least two different online Residents. Without a mention,
-members contribute in sequence and the first member synthesizes the result.
-With `@member` or `@{member}`, only the named group members reply. Each Resident
+all members reply concurrently. With `@member` or `@{member}`, only the named
+group members reply initially. A member can mention another member to continue
+the discussion, or begin a complete answer with `@你` to address the user. Each Resident
 keeps a separate provider thread for each room and receives messages from its
 other ordinary rooms; incognito rooms use only their own context. Requests and replies travel through
 RTDF, while the `residents::chat` Resident owns room state.
 Each `llm.turn.request` includes an `origin` with `solo` or `group` kind,
 room ID, and room name. The LLM inbound Gate validates this origin and stamps
-`source_resident` from RTDF. Codex receives a JSON context envelope with
-`source`, `new_events`, and `current_request`. A separate `tools.rooms`
-Resident provides the `list_group_members` dynamic tool through Codex
-app-server. It queries `chat.rooms` over RTDF and is limited to the current
-group. Codex dynamic tools are experimental.
+`source_resident` from RTDF. Codex sends a short user notice naming the room
+and turn stage; the model calls `read_chat_context` for message text and history.
+The `tools.rooms` Resident supplies the model tool catalog over RTDF; Codex
+registers `read_chat_context`, `list_group_members`, `read_resident_memory`,
+and `publish_media` as app-server dynamic tools. When the model reads chat, the tool
+Resident queries `chat.rooms` over RTDF. Results are limited to the caller's
+rooms, the current turn's message snapshot, and incognito room boundaries.
+Dynamic tools are an experimental Codex app-server protocol.
 
 Sign in with `codex login`, then run from the repository root:
 
@@ -327,9 +331,11 @@ cargo run -p norma-web
 ```
 
 Open <http://127.0.0.1:3000> locally, or use the host's IPv4 address and port
-from another device on the same LAN. The app starts one Codex Resident, using
-`gpt-6-luna` with the local Codex reasoning effort in read-only mode. The `CodexResident` implementation also allows
-only one active instance per process. `NORMA_CODEX_CWD` sets the working directory, and `NORMA_WEB_BIND` sets
+from another device on the same LAN. The app starts two Codex Residents:
+`codex` uses the original `CodexResident` with `gpt-6-luna`, and
+`codex-5.6-luna` uses a separate `Codex56LunaResident` with `gpt-5.6-luna`.
+Each has its own app-server process and provider thread mapping. Both use the local Codex
+reasoning effort and read-only mode by default. `NORMA_CODEX_CWD` sets the working directory, and `NORMA_WEB_BIND` sets
 the listen address. Set `NORMA_CODEX_EFFORT` to change reasoning effort, or
 `NORMA_CODEX_WORKSPACE_WRITE=1` to allow edits. The
 default listener binds all IPv4 interfaces. Set `NORMA_WEB_BIND=127.0.0.1:3000`
@@ -338,13 +344,20 @@ the site only on a trusted network. Ordinary rooms, messages, attachments, and
 provider thread mappings are saved locally under `%LOCALAPPDATA%\NormaHarness` on Windows,
 or the XDG/HOME data directory elsewhere. Set `NORMA_DATA_DIR` to override it.
 Rooms retain their IDs after page close, idle sleep, and process restart. The idle threshold
-is `NORMA_THREAD_IDLE_SECS` (default 1800). Each online model has one ordinary-chat entry and one incognito-chat entry; group rooms and archives are listed separately.
+is `NORMA_THREAD_IDLE_SECS` (default 1800). Each online model has one sidebar entry. The
+"Incognito mode" checkbox below "Create group" applies to new solo and group rooms for all
+selected Residents and is remembered by the browser; existing rooms keep their original mode.
+Archived rooms are hidden from the chat sidebar. The Settings dialog
+lists them with search and filters and a per-room unarchive action; restoring a
+room opens it immediately.
 An active turn waits for its Resident to report completion or failure; Norma does not impose a turn deadline.
 The chat view renders Resident replies as Markdown, including tables, links, and code blocks; messages remain stored as their original text.
-If a provider thread cannot resume, the Resident rebuilds context from saved messages.
+If a provider thread cannot resume, the Resident starts a new thread and asks
+the model to retrieve saved chat history with `read_chat_context`.
 Long-term memory is off by default and can be enabled in Settings. It extracts facts
 only after room sleep (following any configured end hook) or provider context compaction.
 Facts persist on disk, frequent mentions enter cache, and sustained cache facts enter hot memory.
+The model reads hot memory through `read_resident_memory` when needed.
 Incognito rooms are excluded from Norma's chat and memory files, with attachments in a temporary
 directory. The model provider and operating system may retain processing records. Because the
 website has no user authentication, the memory setting applies to this local service instance.

@@ -19,7 +19,7 @@ use axum::{
 use norma_harness::{CapabilityKey, NormaHarness, ResidentKey};
 use norma_residents::{
     chat::{ChatError, ChatResident, ChatResidentRuntime, ChatRoom, storage::ChatStorage},
-    codex::{CodexResident, CodexResidentConfig, CodexSandbox},
+    codex::{Codex56LunaResident, CodexResident, CodexResidentConfig, CodexSandbox},
     media::{MAX_MEDIA_BYTES, MAX_MESSAGE_MEDIA, MediaStore},
     memory::MemoryManager,
     tools::RoomToolsResident,
@@ -494,6 +494,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("NORMA_CODEX_WORKSPACE_WRITE").as_deref() == Ok("1") {
         config.sandbox = CodexSandbox::WorkspaceWrite;
     }
+    let mut luna_config = config.clone();
+    luna_config.key = ResidentKey::new("codex-5.6-luna")?;
+    luna_config.model = Some("gpt-5.6-luna".into());
+    luna_config.conversation_path = Some(data_root.join("codex-5.6-luna-conversations.json"));
     let mut model_names = BTreeMap::new();
     model_names.insert(
         config.key.to_string(),
@@ -502,12 +506,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .clone()
             .unwrap_or_else(|| "Codex default".into()),
     );
+    model_names.insert(
+        luna_config.key.to_string(),
+        luna_config.model.clone().expect("the second model is set"),
+    );
     let codex = CodexResident::launch(
         config,
         harness.registration_sender(),
         harness.message_sender(),
     )
     .await?;
+    let codex_luna = match Codex56LunaResident::launch(
+        luna_config,
+        harness.registration_sender(),
+        harness.message_sender(),
+    )
+    .await
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            codex.shutdown().await?;
+            return Err(error.into());
+        }
+    };
     chat.resident().retry_sleep_memory().await;
     let bind: SocketAddr = std::env::var("NORMA_WEB_BIND")
         .unwrap_or_else(|_| "0.0.0.0:3000".into())
@@ -543,6 +564,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
     sleep_monitor.abort();
+    codex_luna.shutdown().await?;
     codex.shutdown().await?;
     room_tools.shutdown().await?;
     chat.shutdown().await?;

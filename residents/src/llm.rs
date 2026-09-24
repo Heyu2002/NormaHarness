@@ -34,6 +34,14 @@ pub enum LlmRoomKind {
     Group,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmChatTurnKind {
+    Direct,
+    Contribution,
+    Mention,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LlmOrigin {
     pub kind: LlmRoomKind,
@@ -68,6 +76,9 @@ pub struct LlmTurnRequest {
     pub origin: Option<LlmOrigin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_resident: Option<String>,
+    /// Chat-specific notice for adapters that fetch room messages with tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_turn_kind: Option<LlmChatTurnKind>,
     /// Optional provider thread to seed a Resident conversation. Chat leaves
     /// this unset; the Resident maps room IDs to provider threads internally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -196,6 +207,7 @@ mod tests {
                 incognito: false,
             }),
             source_resident: Some("spoofed.source".into()),
+            chat_turn_kind: None,
             thread_id: None,
             context: Vec::new(),
         };

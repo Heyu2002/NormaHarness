@@ -304,16 +304,20 @@ cargo run -p norma-residents --example roundtrip -- . "用一句话概括这个�
 
 本仓库提供本地网站 `norma-web`。网页从 RDF 查询带 `llm` 能力的 Resident，
 在左栏直接显示在线模型。点击模型会打开或复用它的单聊房间；创建群聊时才选择
-至少两名不同的在线 Resident。群聊未使用 `@成员` 时，成员依次贡献，最后由首位成员汇总；
-使用 `@成员` 或 `@{成员}` 时，只由被提及的群成员回复。同一个 Resident 在私聊和群聊中
+至少两名不同的在线 Resident。群聊未使用 `@成员` 时，全部成员并行回复；
+使用 `@成员` 或 `@{成员}` 时，先由被提及的群成员回复。模型可 `@其他成员` 继续讨论，
+认为答案完整时以 `@你` 开头直接回答用户。同一个 Resident 在私聊和群聊中
 为每个房间维护独立的模型线程，并接收它参与的普通房间消息；无痕房间只接收本房间上下文。
 所有请求与结果都经过 RTDF，房间协调状态由 `residents::chat` Resident 持有。
 聊天室在 `llm.turn.request` 中提供 `origin`：`kind` 为 `solo` 或 `group`，
 并带房间 ID 和名称。LLM 入站 Gate 校验来源，并使用 RTDF 的真实发送者填充
-`source_resident`。Codex 收到的上下文是包含 `source`、`new_events`、
-`current_request` 的 JSON。独立的 `tools.rooms` Resident 提供查询当前群成员的
-工具；Codex 通过 app-server 的实验性 `list_group_members` 动态工具调用它，
-经 RTDF 从 `chat.rooms` 获取成员。私聊不能使用该工具，群聊只能查询自己所在的群。
+`source_resident`。Codex 向模型发送一条简短的用户通知，说明消息来自哪个房间、
+本轮是独立回复还是被其他成员提及；模型通过 `read_chat_context` 读取消息正文和历史。独立的
+`tools.rooms` Resident 通过 RTDF 提供工具目录，Codex 将 `read_chat_context`、
+`list_group_members`、`read_resident_memory` 和 `publish_media` 注册为 app-server 动态工具。
+模型调用 `read_chat_context` 时，工具 Resident 经 RTDF 向 `chat.rooms` 查询消息；
+结果只包含调用者参与的房间，并受本轮消息快照和无痕隔离限制。
+`list_group_members` 仅允许查询调用者所在的当前群聊。动态工具仍属 Codex app-server 实验性协议。
 
 输入框可选择、粘贴或拖入 PNG、JPEG、WebP 和 GIF，每条消息最多 4 个文件，
 单个文件最多 8 MiB。原始 GIF 在网页中播放并可下载；传给 Codex 的是首帧图片。
@@ -327,24 +331,27 @@ cargo run -p norma-web
 ```
 
 本机打开 <http://127.0.0.1:3000>；同一局域网可使用运行电脑的 IPv4 地址与端口访问，
-例如 `http://192.168.2.125:3000`。网站只启动一个 Codex Resident，默认模型为
-`gpt-6-luna`，默认沿用本机 Codex 推理强度，默认只读。`CodexResident` 在同一进程中也只允许一个活动实例。
+例如 `http://192.168.2.125:3000`。网站启动两个 Codex Resident：
+`codex` 使用原有 `CodexResident` 和 `gpt-6-luna`，`codex-5.6-luna` 使用独立的
+`Codex56LunaResident` 和 `gpt-5.6-luna`。两者各有独立的
+app-server 进程和模型线程映射，默认沿用本机 Codex 推理强度，默认只读。
 可用 `NORMA_CODEX_CWD` 指定工作目录，`NORMA_WEB_BIND` 指定监听地址，
 `NORMA_CODEX_EFFORT` 调整推理强度，
 `NORMA_CODEX_WORKSPACE_WRITE=1` 允许修改工作目录。网站默认监听所有 IPv4 网卡；
 若只允许本机访问，设置 `NORMA_WEB_BIND=127.0.0.1:3000`。目前没有用户认证，
 仅应在可信网络开放。普通房间、消息、图片附件和模型线程映射自动保存在本机，
 默认目录为 Windows 的 `%LOCALAPPDATA%\NormaHarness`（其他系统使用 XDG/HOME 数据目录），
-可用 `NORMA_DATA_DIR` 修改。每个在线模型各有一个有痕单聊入口和一个无痕单聊入口，群聊与归档单独列出；重启后点击有痕入口可继续原房间，也可归档和取消归档；
+可用 `NORMA_DATA_DIR` 修改。每个在线模型在侧栏只有一个入口；“创建群聊”下方的“无痕模式”选择框统一决定新开的单聊和群聊是否无痕，浏览器会记住该选择，已有会话保留原模式。归档聊天不在聊天侧栏显示；“设置”弹窗可搜索、筛选归档聊天并逐项取消归档，恢复后直接打开会话。关闭无痕后点击模型入口可继续原有痕单聊；
 关闭页面或长时间没有对话会让房间休眠，下一段对话仍使用原房间 ID。
-`NORMA_THREAD_IDLE_SECS` 默认 1800 秒。若旧模型线程无法恢复，Resident 会用本地历史重建上下文。
+`NORMA_THREAD_IDLE_SECS` 默认 1800 秒。若旧模型线程无法恢复，Resident 会新建线程并要求模型通过 `read_chat_context` 读取本地历史。
 执行中的对话会等待 Resident 自行报告完成或失败，Norma 不设置单轮执行时限。
 页面将 Resident 回复按 Markdown 显示，包括表格、链接和代码块；本地历史仍保存原始文本。
 “长期记忆”默认关闭，可在左下角“设置”中开启；开启后仅在房间休眠（先执行可选的结束钩子）或模型上下文压缩时提取，
+模型需要时通过 `read_resident_memory` 读取长期记忆。
 原始事实写入本地文件，短时间重复提及进入 cache，持续存在后进入 hot；hot 一周不提及会退行。
 无痕房间不写入 Norma 的聊天快照和长期记忆；附件使用临时目录，但模型提供方及操作系统仍可能保留处理记录。
 目前没有用户认证，因此记忆开关属于当前本地服务实例，不是独立的多用户设置。只有一个在线模型时，
-可以单聊；接入第二种 LLM Resident 后才可以建群。
+可以单聊；当前两个 Codex Resident 均在线时可以建群。
 
 其他实现要参与聊天室，需声明 `llm` 能力，并实现
 [`residents/src/llm.rs`](./residents/src/llm.rs) 中的
