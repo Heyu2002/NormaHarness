@@ -1,400 +1,70 @@
 # Norma Harness
 
-**English** | [简体中文](./README.zh-CN.md)
+**English** · [简体中文](./README.zh-CN.md) · [ForAGENTS: development guide](./ForAGENTS.md)
 
-Norma Harness is a small Rust library for connecting independently implemented, in-process services called **Residents**.
+Norma Harness is a Rust framework for connecting independent Agents within one process, with a local chat app you can run today. Each participant is a **Resident**: it may be an LLM, a chat room coordinator, or a tool service. Residents own their work and state; the framework discovers them and delivers messages between them.
 
-It defines two data flows:
+If you want different models to think in the same room, mention one another, and keep the door open for your own Agents, this project provides a working starting point.
 
-- **RDF (Registration Data Flow)** registers Residents, enforces unique names, publishes capabilities and delivery endpoints, and announces new registrations.
-- **RTDF (Runtime Data Flow)** moves one message from a registered source to a registered target through a fixed delivery path.
+## What it can do
 
-A Resident keeps control of its own execution model, state, concurrency, dependencies, retry policy, cancellation, rollback, and shutdown boundary. Norma Harness only provides registration and one-hop delivery.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    App["Application"] --> Harness["NormaHarness"]
-
-    Harness --> RDF["RDF<br/>registration authority"]
-    Harness --> RTDF["RTDF<br/>message delivery"]
-
-    RDF --> Directory["Registration directory<br/>name · capability · endpoints"]
-    RDF --> Store["ResidentStore<br/>instance ownership"]
-    Store --> Resident["Resident instances"]
-
-    RTDF -->|resolve route| RDF
-
-    Resident -. "RegistrationSender<br/>(channel only)" .-> RDF
-    Resident -. "MessageSender<br/>(channel only)" .-> RTDF
-```
-
-`NormaHarness` is the composition root. It starts RDF and RTDF and gives the application two cloneable channel handles to inject into Residents. The handles do not own RDF, RTDF, the Store, or the application object.
-
-| Component | Responsibility |
+| Capability | What you can do |
 | --- | --- |
-| `Resident` | Implements one service and exposes its name, capabilities, mailbox, and optional Gates. |
-| `NormaHarness` | Constructs and owns the framework data flows and exposes their narrow entry points. |
-| `RDF` | Serializes registration changes, enforces name uniqueness, maintains the public directory, and announces new Residents. |
-| `ResidentStore` | Strongly owns successfully registered Resident instances by instance ID. It is private framework storage. |
-| `RTDF` | Resolves one target and performs one-hop delivery. It does not execute Resident business logic. |
-| `Gate` | Optionally validates or transforms a message at a Resident-owned transport boundary. |
-| `Mailbox` | Accepts a `ResidentEvent` by enqueueing it for later Resident processing. |
+| Solo and group chat | Click an online model to start a solo chat, or select at least two models for a group. The current web app starts separate GPT-6 Luna and GPT-5.6 Luna Residents. |
+| Parallel answers and follow-ups | Without a specific @ mention, all group members begin answering concurrently. A mention initially addresses the named member. Models can mention other models to continue the discussion and start a complete answer to the user with `@你`. |
+| Context through model tools | The current Codex Residents call `read_chat_context` after a room notification to retrieve real messages instead of receiving a full JSON history inside a user message. They can also look up group members and read long-term memory when needed. |
+| Images and GIFs | Send PNG, JPEG, WebP, and GIF files. A model can publish generated images as previewable, downloadable chat attachments. |
+| History and archives | Ordinary chats and attachments are stored locally and can resume after closing the page or restarting the service. Search, filter, and restore archived chats in Settings. |
+| Incognito and optional memory | Choose incognito for new rooms so Norma does not save their chat snapshot or long-term memory. Long-term memory is off by default; when enabled, it extracts facts after room sleep or model context compaction. |
 
-The model has four core invariants:
+## Why this design matters
 
-1. A Resident name identifies at most one live registration.
-2. Every successful registration receives a process-local, non-reusable `ResidentInstanceId`.
-3. A message always passes through the source outbound Gate, the target inbound Gate, and then the target mailbox.
-4. Business state and business lifecycle remain inside the concrete Resident.
+**Participants can evolve independently.** The chat app discovers LLM Residents by capability. A new model implementation can join by following the shared turn protocol; it does not need a special branch inside the framework. The framework does not take ownership of provider threads, retries, or business state.
 
-## Add the dependency
+**Collaboration is more than a fixed answer chain.** Group members first give independent answers in parallel, then use mentions for further exchanges. A member can address the user when it considers the answer complete. This keeps distinct viewpoints while allowing the discussion to move forward.
 
-For a Git dependency:
+**Models fetch context through tools.** The model receives a short room notice and callable tools. Chat history, group membership, and media have explicit owners. History reads check room membership, what was visible at the start of the turn, and incognito boundaries. That makes new tools easier to add and the model's available context easier to inspect.
 
-```toml
-[dependencies]
-norma-harness = { git = "https://github.com/Heyu2002/NormaHarness" }
-serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-```
+Underneath are two narrow data flows: **RDF** registers Residents and discovers capabilities; **RTDF** delivers one message hop between Residents. Business rules stay with each Resident, so the same foundation can connect services beyond chat.
 
-`NormaHarness::new()` starts background tasks and must be called inside a Tokio runtime.
+## Run it locally
 
-## Minimal example
-
-The example below defines a Resident that owns the two injected framework ports, registers itself when ready, sends one message, and unregisters only after its own work has stopped.
-
-```rust
-use std::{error::Error, sync::Arc};
-
-use norma_harness::{
-    CapabilityKey, FlowMessage, IdentifierError, Mailbox, MailboxAddress,
-    MailboxError, MessageKind, MessageSender, NormaHarness, RegistrationError,
-    RegistrationReceipt, RegistrationSender, Resident, ResidentDescriptor,
-    ResidentEvent, ResidentInstanceId, ResidentKey, RouteError,
-};
-use serde_json::json;
-
-struct PrintMailbox;
-
-impl Mailbox for PrintMailbox {
-    fn deliver(&self, event: ResidentEvent) -> Result<(), MailboxError> {
-        // A real mailbox should enqueue and return immediately.
-        println!("{event:?}");
-        Ok(())
-    }
-}
-
-struct Service {
-    descriptor: ResidentDescriptor,
-    mailbox: MailboxAddress,
-    registration: RegistrationSender,
-    messages: MessageSender,
-}
-
-impl Service {
-    fn new(
-        name: &str,
-        capability: &str,
-        registration: RegistrationSender,
-        messages: MessageSender,
-    ) -> Result<Self, IdentifierError> {
-        Ok(Self {
-            descriptor: ResidentDescriptor::new(
-                ResidentKey::new(name)?,
-                [CapabilityKey::new(capability)?],
-            ),
-            mailbox: Arc::new(PrintMailbox),
-            registration,
-            messages,
-        })
-    }
-
-    async fn register(
-        self: &Arc<Self>,
-    ) -> Result<RegistrationReceipt, RegistrationError> {
-        self.registration.register(Arc::clone(self)).await
-    }
-
-    async fn send(
-        &self,
-        instance_id: ResidentInstanceId,
-        target: &ResidentKey,
-    ) -> Result<(), RouteError> {
-        self.messages
-            .send(
-                instance_id,
-                target,
-                FlowMessage::new(
-                    MessageKind::new("request").expect("static message kind"),
-                    json!({ "prompt": "store this value" }),
-                ),
-            )
-            .await
-    }
-
-    async fn unregister(
-        &self,
-        instance_id: ResidentInstanceId,
-    ) -> Result<(), RegistrationError> {
-        self.registration.unregister(instance_id).await.map(|_| ())
-    }
-}
-
-impl Resident for Service {
-    fn descriptor(&self) -> ResidentDescriptor {
-        self.descriptor.clone()
-    }
-
-    fn mailbox(&self) -> MailboxAddress {
-        self.mailbox.clone()
-    }
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let harness = NormaHarness::new();
-    let registration = harness.registration_sender();
-    let messages = harness.message_sender();
-
-    let llm = Arc::new(Service::new(
-        "llm",
-        "generate",
-        registration.clone(),
-        messages.clone(),
-    )?);
-    let storage = Arc::new(Service::new(
-        "storage",
-        "store",
-        registration,
-        messages,
-    )?);
-
-    let llm_receipt = llm.register().await?;
-    let storage_receipt = storage.register().await?;
-    let storage_key = storage.descriptor().key().clone();
-
-    llm.send(llm_receipt.instance_id(), &storage_key).await?;
-
-    // Each Resident reaches its own safe shutdown boundary first.
-    llm.unregister(llm_receipt.instance_id()).await?;
-    storage
-        .unregister(storage_receipt.instance_id())
-        .await?;
-
-    Ok(())
-}
-```
-
-## Registration and delivery sequence
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant App as Application
-    participant Source as Source Resident
-    participant Reg as RegistrationSender
-    participant RDF
-    participant Store as ResidentStore
-    participant Msg as MessageSender
-    participant RTDF
-    participant Target as Target Resident
-
-    App->>Source: construct(registration, messages)
-    Source->>Reg: register(Arc<Self>)
-    Reg->>RDF: Register command
-    RDF->>Source: read descriptor, mailbox, Gates
-    RDF->>RDF: validate instance and unique name
-    RDF->>Store: retain instance by InstanceId
-    RDF->>RDF: commit registration record
-    RDF->>Target: ResidentRegistered(Source)
-    RDF-->>Source: receipt + existing Residents
-
-    Source->>Msg: send(source InstanceId, target name, message)
-    Msg->>RTDF: Route command
-    RTDF->>RDF: resolve source and target
-    RDF-->>RTDF: source Gate, target Gate, target mailbox
-    RTDF->>Source: outbound Gate
-    Source-->>RTDF: accepted or transformed message
-    RTDF->>Target: inbound Gate
-    Target-->>RTDF: accepted or transformed message
-    RTDF->>Target: enqueue Message event
-    RTDF-->>Source: delivery result
-
-    Source->>Source: stop new work and drain owned work
-    Source->>Reg: unregister(InstanceId)
-    Reg->>RDF: Unregister command
-    RDF->>RDF: remove registration
-    RDF->>Store: release strong instance reference
-    RDF-->>Source: unregistration result
-```
-
-## Registration contract
-
-A Resident registers when all of its public endpoints are ready. The registration request carries the real `Arc<dyn Resident>`, so RDF reads the descriptor, mailbox, and Gates from the instance instead of trusting a separately assembled record.
-
-A successful `RegistrationReceipt` contains:
-
-- the assigned `ResidentInstanceId`;
-- a snapshot of Residents that were already registered;
-- any failures encountered while notifying existing Residents about the newcomer.
-
-RDF is the only same-name authority. Concurrent attempts to register the same name are serialized, and only one can succeed. A notification failure is reported in the receipt; it does not roll back the new registration or remove the Resident whose mailbox rejected the notice.
-
-The descriptor and delivery endpoints must remain stable until unregistration. A service that needs a different public identity or different endpoints should retire the old registration and register a new instance.
-
-## Routing contract
-
-A send request contains three values:
-
-```text
-source ResidentInstanceId
-target ResidentKey
-FlowMessage { kind, JSON payload }
-```
-
-RTDF performs exactly one hop:
-
-```text
-RDF route resolution
-→ source outbound Gate
-→ target inbound Gate
-→ target mailbox
-```
-
-The source is identified by its exact instance ID. Reusing the same Resident name later does not revive an old ID. The target is selected by its current unique name.
-
-Both Gates may accept, reject, or transform the message. The mailbox receives a `ResidentEvent::Message(RoutedMessage)` only after both Gates succeed. Gate or mailbox failure ends that delivery and returns a `RouteError`; it does not change either Resident's registration.
-
-`Mailbox::deliver` is synchronous by design and should only enqueue an event. Resident business work should run in the Resident's own task or executor.
-
-## Lifetime and concurrency
-
-Unregistration is the Resident's final framework operation:
-
-```text
-stop accepting new work
-→ drain or cancel Resident-owned work
-→ close or guard public endpoints
-→ unregister the exact InstanceId
-→ return from Resident execution
-```
-
-RDF does not wait for a Resident execution function during unregistration. Waiting in both directions would create a lifecycle deadlock. Removing a Store reference also does not force object destruction: unrelated `Arc` references may keep the Rust value alive, but the old instance no longer has a valid RDF identity and cannot start new RTDF sends.
-
-A delivery that already copied its Gate and mailbox handles may finish concurrently with unregistration. Each Resident must make late calls safe at its own shutdown boundary.
-
-RDF processes registration commands serially. RTDF dispatches deliveries independently, so a Gate may await or initiate another send without blocking one global delivery loop. Dropping `NormaHarness` shuts down the framework cores even if cloned Sender handles still exist.
-
-## Resident implementations
-
-The [`norma-residents`](./residents/README.md) package holds
-concrete Resident implementations. Its `codex` module runs the locally
-authenticated Codex CLI as a Resident. It uses
-`codex app-server` over stdio, defaults to `gpt-6-luna`, and returns results
-through RTDF. It keeps Codex thread state, execution, and shutdown inside the
-concrete Resident rather than adding them to RDF or RTDF.
-
-```console
-cargo run -p norma-residents --example roundtrip -- . "Summarize this repository in one sentence."
-```
-
-## Resident chat room
-
-The `norma-web` package serves a local chat website. It discovers Residents
-advertising the `llm` capability through RDF and lists online models directly
-in the sidebar. Clicking a model opens or reuses its one-to-one room. Group
-creation selects at least two different online Residents. Without a mention,
-all members reply concurrently. With `@member` or `@{member}`, only the named
-group members reply initially. A member can mention another member to continue
-the discussion, or begin a complete answer with `@你` to address the user. Each Resident
-keeps a separate provider thread for each room and receives messages from its
-other ordinary rooms; incognito rooms use only their own context. Requests and replies travel through
-RTDF, while the `residents::chat` Resident owns room state.
-Each `llm.turn.request` includes an `origin` with `solo` or `group` kind,
-room ID, and room name. The LLM inbound Gate validates this origin and stamps
-`source_resident` from RTDF. Codex sends a short user notice naming the room
-and turn stage; the model calls `read_chat_context` for message text and history.
-The `tools.rooms` Resident supplies the model tool catalog over RTDF; Codex
-registers `read_chat_context`, `list_group_members`, `read_resident_memory`,
-and `publish_media` as app-server dynamic tools. When the model reads chat, the tool
-Resident queries `chat.rooms` over RTDF. Results are limited to the caller's
-rooms, the current turn's message snapshot, and incognito room boundaries.
-Dynamic tools are an experimental Codex app-server protocol.
-
-Sign in with `codex login`, then run from the repository root:
+You need Rust **1.85+**, an installed and signed-in Codex CLI, and a local account with access to the selected models. Run `codex login`, then from the repository root:
 
 ```console
 cargo run -p norma-web
 ```
 
-Open <http://127.0.0.1:3000> locally, or use the host's IPv4 address and port
-from another device on the same LAN. The app starts two Codex Residents:
-`codex` uses the original `CodexResident` with `gpt-6-luna`, and
-`codex-5.6-luna` uses a separate `Codex56LunaResident` with `gpt-5.6-luna`.
-Each has its own app-server process and provider thread mapping. Both use the local Codex
-reasoning effort and read-only mode by default. `NORMA_CODEX_CWD` sets the working directory, and `NORMA_WEB_BIND` sets
-the listen address. Set `NORMA_CODEX_EFFORT` to change reasoning effort, or
-`NORMA_CODEX_WORKSPACE_WRITE=1` to allow edits. The
-default listener binds all IPv4 interfaces. Set `NORMA_WEB_BIND=127.0.0.1:3000`
-to limit access to this machine. There is no user authentication yet, so expose
-the site only on a trusted network. Ordinary rooms, messages, attachments, and
-provider thread mappings are saved locally under `%LOCALAPPDATA%\NormaHarness` on Windows,
-or the XDG/HOME data directory elsewhere. Set `NORMA_DATA_DIR` to override it.
-Rooms retain their IDs after page close, idle sleep, and process restart. The idle threshold
-is `NORMA_THREAD_IDLE_SECS` (default 1800). Each online model has one sidebar entry. The
-"Incognito mode" checkbox below "Create group" applies to new solo and group rooms for all
-selected Residents and is remembered by the browser; existing rooms keep their original mode.
-Archived rooms are hidden from the chat sidebar. The Settings dialog
-lists them with search and filters and a per-room unarchive action; restoring a
-room opens it immediately.
-An active turn waits for its Resident to report completion or failure; Norma does not impose a turn deadline.
-The chat view renders Resident replies as Markdown, including tables, links, and code blocks; messages remain stored as their original text.
-If a provider thread cannot resume, the Resident starts a new thread and asks
-the model to retrieve saved chat history with `read_chat_context`.
-Long-term memory is off by default and can be enabled in Settings. It extracts facts
-only after room sleep (following any configured end hook) or provider context compaction.
-Facts persist on disk, frequent mentions enter cache, and sustained cache facts enter hot memory.
-The model reads hot memory through `read_resident_memory` when needed.
-Incognito rooms are excluded from Norma's chat and memory files, with attachments in a temporary
-directory. The model provider and operating system may retain processing records. Because the
-website has no user authentication, the memory setting applies to this local service instance.
-With one online
-model, solo chat works; group creation becomes available when another distinct
-LLM Resident is registered.
-
-Additional implementations can join by advertising `llm` and handling the
-[`llm.turn.request` / `llm.turn.result` contract](./residents/src/llm.rs).
-Codex also retains the older `codex.turn.*` protocol.
-
-## Repository layout
-
-```text
-src/
-├── application.rs     # composition root and injected ports
-├── rdf.rs             # registration commands and directory
-├── resident_store.rs  # strong ownership of registered instances
-├── rtdf.rs            # one-hop delivery pipeline
-├── resident.rs        # Resident interface and registration events
-├── gate.rs            # outbound and inbound message boundaries
-├── mailbox.rs         # Resident-owned delivery address
-├── message.rs         # flow and routed messages
-├── id.rs              # names, capability keys, and instance IDs
-└── error.rs           # boundary errors
-```
-
-The detailed invariants are documented in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
-
-## Development
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000). The web server binds to all IPv4 interfaces by default and has no website user authentication, so expose it only on a trusted network. To bind only to this machine:
 
 ```console
-cargo test --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all -- --check
+NORMA_WEB_BIND=127.0.0.1:3000 cargo run -p norma-web
 ```
 
-## License
+That environment-variable syntax is for a Unix-like shell. In PowerShell, set `$env:NORMA_WEB_BIND = "127.0.0.1:3000"` before running `cargo run -p norma-web`.
 
-Apache-2.0.
+In the app, click a model for solo chat. Create a group with both models to compare an unaddressed message, a message that @ mentions one model, and model-to-model follow-ups. The “Incognito mode” checkbox below “Create group” applies to new rooms; existing rooms retain their original mode.
+
+Ordinary rooms, messages, media, and provider conversation mappings are stored locally. On Windows the default directory is `%LOCALAPPDATA%\NormaHarness`; elsewhere it uses the XDG/HOME data directory. Set `NORMA_DATA_DIR` to change it. Incognito only limits Norma's own persistence; the model provider and operating system may retain processing records.
+
+Common settings:
+
+| Environment variable | Purpose |
+| --- | --- |
+| `NORMA_WEB_BIND` | Listen address; defaults to `0.0.0.0:3000`. |
+| `NORMA_CODEX_CWD` | Working directory used by Codex Residents; defaults to the current directory. |
+| `NORMA_CODEX_EFFORT` | Override the local Codex reasoning effort. |
+| `NORMA_CODEX_WORKSPACE_WRITE=1` | Allow Codex to edit the chosen workspace; read-only by default. |
+| `NORMA_DATA_DIR` | Local directory for ordinary chat, media, memory, and provider conversation mappings. |
+
+## Use it as a framework
+
+`norma-harness` is the registration and message delivery library. `norma-residents` contains the Codex, chat, and tool implementations. To try a round trip without starting the website, run the [example](./residents/examples/roundtrip.rs):
+
+```console
+cargo run -p norma-residents --example roundtrip -- . "Summarize this repository in one sentence."
+```
+
+To add a Resident, change a model tool, or understand the framework constraints, read [ForAGENTS.md](./ForAGENTS.md). The [architecture notes](./docs/ARCHITECTURE.md) explain ownership and registration/delivery invariants in detail; [residents/README.md](./residents/README.md) covers the concrete Codex Resident protocols.
+
+Licensed under Apache-2.0.
