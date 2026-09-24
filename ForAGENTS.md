@@ -1,106 +1,106 @@
-# ForAGENTS：Norma Harness 开发地图
+# ForAGENTS: Norma Harness development map
 
-[中文项目介绍](./README.zh-CN.md) · [English overview](./README.md)
+[English project overview](./README.md) · [Chinese project overview](./README.zh-CN.md)
 
-本文件用于改代码时定位职责、保持协议边界，并解释这些约束的原因。它描述当前实现；具体签名以源码为准。面向使用者的功能和价值写在中英文 README，底层所有权的完整推导见 [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)。
+Use this document to locate code, preserve protocol boundaries, and understand why those boundaries exist. It describes the current implementation; source code is authoritative for exact signatures. The two READMEs explain the project to people. [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) contains a deeper account of ownership and routing.
 
-## 先判断改动属于哪一层
+## Find the owning layer first
 
-| 需求 | 主要位置 | 对应验证 |
+| Change | Primary code | Verification |
 | --- | --- | --- |
-| 注册、能力发现、实例身份 | `src/rdf.rs`、`src/resident_store.rs`、`src/resident.rs`、`src/id.rs` | `tests/data_flows.rs` |
-| 消息路由、Gate、邮箱 | `src/rtdf.rs`、`src/gate.rs`、`src/mailbox.rs`、`src/message.rs` | `tests/data_flows.rs` |
-| LLM 请求/结果协议与来源校验 | `residents/src/llm.rs` | `residents/tests/chat_rooms.rs` |
-| 房间、群聊调度、@、归档、休眠 | `residents/src/chat/mod.rs` | `residents/tests/chat_rooms.rs` |
-| 普通聊天快照 | `residents/src/chat/storage.rs` | `residents/tests/chat_rooms.rs` |
-| Codex 模型进程、线程、动态工具调用 | `residents/src/codex/mod.rs`、`app_server.rs`、`protocol.rs` | Codex 单元测试、`chat_rooms.rs` |
-| 工具目录、工具请求转发 | `residents/src/tools/mod.rs` | `residents/tests/chat_rooms.rs` |
-| 图片/GIF 校验与存储、长期记忆 | `residents/src/media.rs`、`memory.rs` | 对应模块测试、`chat_rooms.rs` |
-| HTTP、启动组合、环境变量 | `web/src/main.rs` | `cargo test -p norma-web`、HTTP 检查 |
-| 页面与交互 | `web/static/index.html`、`style.css`、`app.js` | `node --check web/static/app.js`、浏览器检查 |
+| Registration, capability discovery, instance identity | `src/rdf.rs`, `src/resident_store.rs`, `src/resident.rs`, `src/id.rs` | `tests/data_flows.rs` |
+| Message routing, Gates, mailboxes | `src/rtdf.rs`, `src/gate.rs`, `src/mailbox.rs`, `src/message.rs` | `tests/data_flows.rs` |
+| LLM request/result protocol and origin validation | `residents/src/llm.rs` | `residents/tests/chat_rooms.rs` |
+| Rooms, group scheduling, mentions, archive, sleep | `residents/src/chat/mod.rs` | `residents/tests/chat_rooms.rs` |
+| Persistent chat snapshots | `residents/src/chat/storage.rs` | `residents/tests/chat_rooms.rs` |
+| Codex processes, provider threads, dynamic tool calls | `residents/src/codex/mod.rs`, `app_server.rs`, `protocol.rs` | Codex unit tests, `chat_rooms.rs` |
+| Tool catalog and request forwarding | `residents/src/tools/mod.rs` | `residents/tests/chat_rooms.rs` |
+| Image/GIF validation and storage; long-term memory | `residents/src/media.rs`, `memory.rs` | Module tests, `chat_rooms.rs` |
+| HTTP API, startup composition, environment settings | `web/src/main.rs` | `cargo test -p norma-web`, HTTP checks |
+| Page markup and interaction | `web/static/index.html`, `style.css`, `app.js` | `node --check web/static/app.js`, browser checks |
 
-工作区有三个包：根目录 `norma-harness` 是通用框架，`residents/` 是具体参与者，`web/` 是把它们组装成聊天室的应用。不要因为一个聊天功能需要跨包传递消息，就把聊天状态塞进根框架。
+The workspace has three crates. Root `norma-harness` is the reusable framework; `residents/` contains concrete participants; `web/` composes them into a chat application. A chat feature that crosses crates still belongs in a concrete Resident, not in the root framework.
 
-## 核心框架的硬边界
+## Hard boundaries of the framework
 
-### 1. Resident 自己拥有执行与状态
+### 1. A Resident owns its execution and state
 
-`Resident` trait 只暴露稳定的 `ResidentDescriptor`、`MailboxAddress` 和可选的传出/传入 `Gate`。它没有统一的 `start/stop`、重试器、回滚器或会话管理器。新 Resident 可以有自己的队列、子进程、任务和关闭步骤。
+The `Resident` trait exposes only a stable `ResidentDescriptor`, a `MailboxAddress`, and optional outbound/inbound `Gate` implementations. It has no shared `start/stop` method, retry engine, rollback engine, or session manager. A new Resident may own its own queue, child process, tasks, and shutdown sequence.
 
-**原因：** 框架连接不同类型的服务，不能假定它们共享一种业务生命周期。把执行策略放进 RDF/RTDF 会让一个模型适配器的需要变成所有 Resident 的限制。
+**Why:** the framework connects different kinds of services and cannot assume one business lifecycle. Putting an adapter's execution policy into RDF or RTDF would impose that policy on every Resident.
 
-应用构造 Resident 时只注入 `RegistrationSender` 和 `MessageSender`。这两个可克隆句柄只持有通道发送端；Resident 不应保存 `NormaHarness`、RDF、RTDF 或 `ResidentStore` 的强引用。这样 `RDF → Store → Resident` 不会再经 Resident 回指框架，避免强引用环。
+The application injects only `RegistrationSender` and `MessageSender` when constructing a Resident. These cloneable handles own channel senders only. A Resident should not retain strong references to `NormaHarness`, RDF, RTDF, or `ResidentStore`. Otherwise the ownership path `RDF → Store → Resident` could loop back into the framework.
 
-### 2. RDF 是唯一的注册权威
+### 2. RDF is the sole registration authority
 
-Resident 在邮箱和 Gate 准备好之后，调用 `RegistrationSender::register(Arc<Self>)`。RDF 从真实实例读取公开端点，串行审核名称唯一性，分配本进程内不复用的 `ResidentInstanceId`，并同时更新注册目录与私有 `ResidentStore`。成功回执包含实例 ID、先前的 Resident 快照和注册通知失败。通知失败只记录在回执中，不回滚已经成功的注册。
+After its mailbox and Gates are ready, a Resident calls `RegistrationSender::register(Arc<Self>)`. RDF reads the public endpoints from the actual instance, serializes same-name checks, assigns a process-local, non-reusable `ResidentInstanceId`, and updates both the registration directory and private `ResidentStore`. A successful receipt contains the instance ID, a snapshot of previously registered Residents, and any registration-notice failures. Notice failures are reported; they do not undo a successful registration.
 
-`ResidentStore` 只按实例 ID 强持有注册成功的对象；它不检查名称、不做路由，也不管理业务状态。名称及能力的查询只走 RDF 的注册目录。
+`ResidentStore` strongly owns successful registrations by instance ID. It does not check names, route messages, or hold business state. Name and capability queries use RDF's registration directory.
 
-**原因：** 同名审核与实例所有权必须在同一个注册命令里提交。旧实例注销后可以复用名称，但旧实例 ID 永远不能重新获得发送权。实例 ID 是进程内代次标识，不是跨进程安全凭证。
+**Why:** name uniqueness and instance ownership must be committed in the same registration command. A new instance may reuse a name after the old one unregisters, but the old instance ID must never regain sending rights. The ID marks a generation within this process; it is not a cross-process security credential.
 
-### 3. RTDF 只做一次投递
+### 3. RTDF performs exactly one delivery hop
 
-发送接口是 `send(source_instance_id, target_key, FlowMessage)`。固定顺序为：
+The send entry point is `send(source_instance_id, target_key, FlowMessage)`. Its fixed path is:
 
 ```text
-RDF 校验源并解析目标
-→ 源 outbound Gate
-→ 目标 inbound Gate
-→ 目标 Mailbox::deliver
+RDF validates the source and resolves the target
+→ source outbound Gate
+→ target inbound Gate
+→ target Mailbox::deliver
 ```
 
-`Mailbox::deliver` 是同步接口，应当只入队，不能在里面运行模型或等待耗时业务。`send().await` 成功只表示目标邮箱接受了消息；模型结果必须用另一条 `llm.turn.result` 消息返回，并由 `request_id` 关联。
+`Mailbox::deliver` is synchronous and should only enqueue an event. Do not run a model or wait for long-running business work inside it. A successful `send().await` confirms mailbox acceptance only. An LLM result arrives in a separate `llm.turn.result` message correlated by `request_id`.
 
-**原因：** RTDF 不理解聊天、工具或模型语义，也不负责业务重试。每次投递独立调度，Gate 内再发送消息不会被一个全局投递循环卡住。Gate/邮箱失败只结束本次投递，不改注册状态。
+**Why:** RTDF does not understand chat, tools, or model semantics and does not perform business retries. It dispatches deliveries independently, so a Gate can send another message without blocking a global delivery loop. A Gate or mailbox failure ends that delivery without changing registration state.
 
-### 4. 注销属于 Resident 的最后阶段
+### 4. Unregistration is the Resident's final framework step
 
-顺序是停止接收新工作、排空或取消自己拥有的工作、保护公开端点，然后用准确的实例 ID 注销。RDF 不等待 Resident 的执行函数结束，否则执行函数等待 `unregister` 回执时会形成死锁。已经取到 Gate/邮箱句柄的投递可能晚于注销完成；具体 Resident 要让这种迟到调用安全完成或失败。
+Stop accepting new work, drain or cancel owned work, guard public endpoints, then unregister the exact instance ID. RDF does not wait for the Resident's execution function to return: that function may itself be waiting for the `unregister` response. A delivery that already copied Gate or mailbox handles can finish after unregistration, so the concrete Resident must make late calls safe.
 
-## 聊天与模型的实际路径
+## The actual chat and model path
 
-`web/src/main.rs` 在 Tokio 内创建 `NormaHarness`，然后注册 `chat.rooms`、`tools.rooms`、两个独立的 Codex Resident，再启动 Axum。当前 `codex` 使用 GPT-6 Luna；`codex-5.6-luna` 使用单独的 `Codex56LunaResident` 和 GPT-5.6 Luna。两者有各自的 app-server 进程与 provider thread 映射。原 `CodexResident` 的单实例限制仍然存在；增加另一 Resident 时不要靠解除这个限制来复用旧实例。
+`web/src/main.rs` creates `NormaHarness` inside Tokio, registers `chat.rooms`, `tools.rooms`, and two separate Codex Residents, then starts Axum. Currently `codex` uses GPT-6 Luna; `codex-5.6-luna` uses a separate `Codex56LunaResident` with GPT-5.6 Luna. Each has its own app-server process and provider-thread mapping. The original `CodexResident` still has a single-active-instance limit. Do not remove that guard to turn an old instance into a second Resident.
 
-一次聊天轮次沿以下路径运行：
+One chat turn follows this route:
 
 ```text
-网页 → HTTP → ChatResident 房间
-→ RTDF: llm.turn.request → 目标 LLM Resident
+Browser → HTTP → ChatResident room
+→ RTDF: llm.turn.request → target LLM Resident
 → RTDF: llm.turn.result → ChatResident
-→ 房间消息 / SSE → 网页
+→ room messages / SSE → browser
 ```
 
-协议类型在 `residents/src/llm.rs`。声明 `llm` 能力必须真的处理 `llm.turn.request` 并回送带同一 `request_id` 的 `llm.turn.result`。请求有房间 `origin` 和本轮 `context`。`LlmContextGate` 校验房间来源，并用 RTDF 的真实源 Resident 填充 `source_resident`；不要信任任意载荷里自称的来源。
+The shared protocol lives in `residents/src/llm.rs`. A Resident advertising the `llm` capability must handle `llm.turn.request` and return `llm.turn.result` with the same `request_id`. Requests carry the room `origin` and turn `context`. `LlmContextGate` validates the origin and stamps `source_resident` from RTDF's actual sender. Do not trust a claimed source in an arbitrary payload.
 
-`ChatResident` 拥有房间、消息、忙碌状态和响应关联。群聊无指定 @ 时，它为所有成员启动独立的初始轮次；指定 @ 时只启动被提及成员。不同成员的初始轮次并行；**同一个 Resident 跨房间的轮次仍串行**，以维持该 Resident 的上下文顺序。初始轮次结束后才处理模型之间的 @ 接力；单轮接力最多 16 次。以 `@你` 开头的完整回答会作为面向用户的总结显示。
+`ChatResident` owns rooms, messages, busy state, and reply correlation. With no specific mention, it starts independent initial turns for every group member; with a mention, it initially calls only the named members. Initial turns for different members run concurrently. **Turns for the same Resident remain serialized across rooms** to preserve that Resident's context order. Model-to-model mention follow-ups run after the initial turns, with a limit of 16 follow-up turns per user message. A complete answer prefixed with the literal `@你` is displayed to the user as a summary.
 
-这些调度规则放在 `residents/src/chat/mod.rs`，不放在 `web/static/app.js` 或 RTDF。网页负责呈现和发请求，不应决定哪个模型下一轮发言。
+These scheduling rules belong in `residents/src/chat/mod.rs`, not in `web/static/app.js` or RTDF. The browser presents state and sends requests; it does not choose the next model to speak.
 
-## 模型工具与上下文边界
+## Model tools and context boundaries
 
-Codex 收到的是简短的房间通知，提示先调用 `read_chat_context`；它不会把整个聊天 JSON 信封当作用户消息正文。`tools.rooms` 通过 RTDF 提供工具目录，Codex 适配器把 `read_chat_context`、`list_group_members`、`read_resident_memory` 和 `publish_media` 注册为 app-server `dynamicTools`。这是当前 Codex app-server 的实验性接口；改协议时核对 `residents/src/codex/app_server.rs` 与实际响应。
+Codex receives a short room notice instructing it to call `read_chat_context`. It does not receive the entire chat JSON envelope as user-message text. `tools.rooms` supplies a tool catalog over RTDF; the Codex adapter registers `read_chat_context`, `list_group_members`, `read_resident_memory`, and `publish_media` as app-server `dynamicTools`. This is currently an experimental Codex app-server interface. Check `residents/src/codex/app_server.rs` and actual app-server responses when changing it.
 
-新增模型工具至少检查四处：`tools/mod.rs` 的目录与消息种类、`codex/app_server.rs` 的调用分派、拥有真实数据的 Resident、以及跨 Resident 测试。工具服务可以转发查询，但不能凭模型传入的房间 ID 自行授予访问权限。
+When adding a model tool, review at least four places: the catalog and message kinds in `tools/mod.rs`, dispatch in `codex/app_server.rs`, the Resident that owns the real data, and a cross-Resident test. A forwarding tool service must not grant access merely because a model supplied a room ID.
 
-`read_chat_context` 的可见范围来自当前轮次快照。`ChatResident` 校验调用者确实是房间成员、消息 ID 未超过本轮可见上界，并隔离无痕房间；普通房间可按需读取该模型参加的其他普通房间，无痕只可读取本房间。保持这些检查在真实数据所有者处，避免模型从工具参数扩大权限。
+`read_chat_context` is bounded by the current turn's snapshot. `ChatResident` checks that the caller belongs to the room, that returned message IDs do not exceed the visible upper bound, and that incognito rooms remain isolated. An ordinary room may request messages from the model's other ordinary rooms; an incognito room can read only itself. Keep authorization at the real data owner so tool arguments cannot expand model access.
 
-`publish_media` 把真实图片字节交给媒体服务。仅在模型文本里写文件名不会生成附件。图片上限为每条消息 4 个、每个 8 MiB；支持 PNG、JPEG、WebP 和 GIF。普通媒体持久化，无痕媒体放临时目录；GIF 在页面保留动画，模型读取首帧。
+`publish_media` sends actual image bytes to the media service. A filename in model text does not create an attachment. The limits are four files per message and 8 MiB per file; PNG, JPEG, WebP, and GIF are supported. Ordinary media is persistent, incognito media uses a temporary directory, and the browser keeps GIF animation while the model sees its first frame.
 
-长期记忆默认关闭。`ChatResident` 只在房间休眠或模型上下文压缩后发出提取触发；`MemoryManager` 保存事实、cache/hot 状态，模型通过 `read_resident_memory` 按需读取。无痕房间不进入记忆。当前 `web` 给两个 Codex Resident 注入同一个 `MemoryManager`，因此不要在文档或代码中假设它们各有独立记忆库。
+Long-term memory is off by default. `ChatResident` triggers extraction only after room sleep or model-context compaction. `MemoryManager` stores facts and their cache/hot status; the model reads them on demand through `read_resident_memory`. Incognito rooms do not enter memory. The current web app injects one shared `MemoryManager` into both Codex Residents; do not describe them as having separate memory stores.
 
-## 如何写常见改动
+## How to make common changes
 
-1. **新增普通 Resident：** 先看[往返示例](./residents/examples/roundtrip.rs)。在 `residents/` 实现最小 `Resident` 接口，先建立邮箱和可选 Gate，再注册真实 `Arc`；保存回执实例 ID；后台 worker 只处理自己入队的事件；关闭时排空并注销。用 `tests/data_flows.rs` 或相应集成测试验证身份和路由。
-2. **新增 LLM 提供者：** 实现 `llm.rs` 的请求/结果协议，声明 `llm` 能力，检查 `origin`，用 `request_id` 对齐异步回复，并自行管理 provider 会话。加入 `chat_rooms.rs` 测试单聊、无 @ 并发、指定 @、后续提及和无痕范围。
-3. **改群聊行为：** 从 `ChatResident::send_user_message_with_media`、`run_turn`、`ask` 追踪一次完整轮次。先确认是跨成员并行、同成员串行还是 @ 接力问题，再改调度；不要用前端延迟或 RTDF 全局锁解决。
-4. **改模型工具：** 保持模型可见的 schema、Codex 分派、RTDF 工具消息和数据所有者的校验一致。把聊天信息通过 `read_chat_context` 等真实工具返回，不在提示词里伪造工具结果。
-5. **改网页：** `web/src/main.rs` 是 HTTP 和运行时组合入口，静态资源由 `include_str!` 编进可执行文件；改 `web/static/*` 后需重建并重启服务，浏览器刷新才会看到新版。页面筛选和显示逻辑在 `app.js`；房间真相仍以 `ChatResident` 为准。
-6. **改持久化或无痕：** 同时检查 `chat/storage.rs`、`media.rs`、`memory.rs`、Codex conversation 映射和恢复路径。普通房间需要可恢复；无痕不得写入 Norma 的普通快照或长期记忆。
+1. **Add a regular Resident:** start with the [round-trip example](./residents/examples/roundtrip.rs). Implement the minimal `Resident` interface in `residents/`, prepare the mailbox and optional Gates, then register the real `Arc`. Keep the receipt's instance ID. Let the worker process its queued events; drain it and unregister during shutdown. Test identity and routing in `tests/data_flows.rs` or an appropriate integration test.
+2. **Add an LLM provider:** implement the request/result protocol in `llm.rs`, advertise `llm`, validate `origin`, correlate asynchronous replies by `request_id`, and own provider-session continuity. Cover solo chat, no-mention concurrency, directed mentions, follow-ups, and incognito scope in `chat_rooms.rs`.
+3. **Change group behavior:** trace a full turn through `ChatResident::send_user_message_with_media`, `run_turn`, and `ask`. First determine whether the issue concerns parallel members, serial turns for one member, or mention follow-ups. Do not solve it with a frontend delay or a global RTDF lock.
+4. **Change a model tool:** keep the model-facing schema, Codex dispatch, RTDF tool messages, and data-owner validation in sync. Return chat information through real tools such as `read_chat_context`; do not fabricate tool results in a prompt.
+5. **Change the website:** `web/src/main.rs` owns HTTP and runtime composition. Static assets are compiled into the executable with `include_str!`; after changing `web/static/*`, rebuild and restart the service before checking the page. Filtering, presentation, and English/Chinese UI strings live in `app.js`; markup keys live in `index.html`. The page language defaults to English and is stored per browser in `localStorage`. `ChatResident` remains the authority for rooms.
+6. **Change persistence or incognito behavior:** inspect `chat/storage.rs`, `media.rs`, `memory.rs`, Codex conversation mappings, and restore paths together. Ordinary rooms must remain resumable; incognito rooms must not enter Norma's ordinary snapshot or long-term memory.
 
-## 运行与验证
+## Run and verify
 
-工作区使用 Rust 2024 edition，最低 Rust 1.85。常规检查：
+The workspace uses Rust 2024 edition and requires Rust 1.85 or newer. Standard checks:
 
 ```console
 cargo fmt --all -- --check
@@ -109,6 +109,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 node --check web/static/app.js
 ```
 
-改动只涉及文档时，检查链接、命令、文件路径与当前代码相符，并运行 `git diff --check`。改聊天协议、工具或无痕行为时，以 `residents/tests/chat_rooms.rs` 的跨 Resident 测试为主；改 RDF/RTDF 时以 `tests/data_flows.rs` 为主。`live_codex_can_call_group_member_tool` 需要本机登录的 Codex CLI 和真实模型，默认跳过，不能把它的跳过当成在线调用已验证。
+For documentation-only changes, verify links, commands, and paths against current code, then run `git diff --check`. For chat protocol, tool, or incognito changes, prefer the cross-Resident tests in `residents/tests/chat_rooms.rs`. For RDF/RTDF changes, use `tests/data_flows.rs`. `live_codex_can_call_group_member_tool` requires an authenticated local Codex CLI and a real model turn; it is ignored by default, so its skipped status is not evidence of a live call.
 
-本地网页默认绑定 `0.0.0.0:3000`，当前没有网站用户认证。常用启动配置由 `web/src/main.rs` 读取：`NORMA_WEB_BIND`、`NORMA_CODEX_CWD`、`NORMA_CODEX_BIN`、`NORMA_CODEX_EFFORT`、`NORMA_CODEX_WORKSPACE_WRITE`、`NORMA_DATA_DIR`、`NORMA_THREAD_IDLE_SECS`。默认 Codex 沙箱只读；只有明确设置 `NORMA_CODEX_WORKSPACE_WRITE=1` 才允许工作区写入。
+The local website binds to `0.0.0.0:3000` by default and currently has no website user authentication. `web/src/main.rs` reads these startup settings: `NORMA_WEB_BIND`, `NORMA_CODEX_CWD`, `NORMA_CODEX_BIN`, `NORMA_CODEX_EFFORT`, `NORMA_CODEX_WORKSPACE_WRITE`, `NORMA_DATA_DIR`, and `NORMA_THREAD_IDLE_SECS`. Codex uses a read-only sandbox by default; only `NORMA_CODEX_WORKSPACE_WRITE=1` enables workspace edits.

@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#111b2f">
-  <title>Norma · Resident 聊天室</title>
+  <title>Norma · Resident Chat</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/markdown-it.js" defer></script>
   <script src="/app.js" defer></script>
@@ -13,81 +13,82 @@
   <div class="shell">
     <aside class="sidebar" id="sidebar">
       <div class="brand"><div class="brand-mark">N</div><div><strong>Norma</strong><small>HARNESS / CHAT</small></div></div>
-      <button class="new-room" id="new-room"><span class="plus">＋</span> 创建群聊</button>
-      <label class="incognito-setting" title="勾选后，新开的单聊和群聊都不保存本地历史，也不提取长期记忆"><input id="incognito-mode" type="checkbox"><span>无痕模式</span><small>新会话</small></label>
-      <div class="section-label">在线模型 <span id="model-count">0</span></div>
-      <nav class="room-list model-list" id="model-list" aria-label="在线模型"></nav>
-      <div class="section-label group-label">群聊 <span id="group-count">0</span></div>
-      <nav class="room-list group-list" id="group-list" aria-label="群聊列表"></nav>
-      <div class="sidebar-footer"><span class="live-dot"></span><span id="resident-count">正在连接 Resident…</span><button class="settings-button" id="settings-button" type="button" aria-label="设置" title="设置" aria-haspopup="dialog" aria-controls="settings-page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 2h4l.5 2.4 1.6.7 2.1-1.3 2 2-1.3 2.1.7 1.6L22 10v4l-2.4.5-.7 1.6 1.3 2.1-2 2-2.1-1.3-1.6.7L14 22h-4l-.5-2.4-1.6-.7-2.1 1.3-2-2 1.3-2.1-.7-1.6L2 14v-4l2.4-.5.7-1.6-1.3-2.1 2-2 2.1 1.3 1.6-.7Z"/><circle cx="12" cy="12" r="3.1"/></svg></button></div>
+      <button class="new-room" id="new-room"><span class="plus">＋</span><span data-i18n="createGroup">Create group</span></button>
+      <label class="incognito-setting" title="New chats stay out of local history and long-term memory" data-i18n-title="incognitoHint"><input id="incognito-mode" type="checkbox"><span data-i18n="incognitoMode">Incognito mode</span><small data-i18n="newChats">New chats</small></label>
+      <div class="section-label"><span data-i18n="onlineModels">Online models</span><span id="model-count">0</span></div>
+      <nav class="room-list model-list" id="model-list" aria-label="Online models" data-i18n-aria-label="onlineModels"></nav>
+      <div class="section-label group-label"><span data-i18n="groups">Groups</span><span id="group-count">0</span></div>
+      <nav class="room-list group-list" id="group-list" aria-label="Group chats" data-i18n-aria-label="groupChats"></nav>
+      <div class="sidebar-footer"><span class="live-dot"></span><span id="resident-count">Connecting to Residents…</span><button class="settings-button" id="settings-button" type="button" aria-label="Settings" title="Settings" data-i18n-aria-label="settings" data-i18n-title="settings" aria-haspopup="dialog" aria-controls="settings-page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 2h4l.5 2.4 1.6.7 2.1-1.3 2 2-1.3 2.1.7 1.6L22 10v4l-2.4.5-.7 1.6 1.3 2.1-2 2-2.1-1.3-1.6.7L14 22h-4l-.5-2.4-1.6-.7-2.1 1.3-2-2 1.3-2.1-.7-1.6L2 14v-4l2.4-.5.7-1.6-1.3-2.1 2-2 2.1 1.3 1.6-.7Z"/><circle cx="12" cy="12" r="3.1"/></svg></button></div>
     </aside>
 
     <main class="main">
       <header class="topbar">
-        <button class="menu-toggle" id="menu-toggle" aria-label="打开会话列表">☰</button>
-        <div class="topbar-title"><div class="eyebrow">RESIDENT WORKSPACE</div><h1 id="room-title">开始一次对话</h1></div>
-        <div class="topbar-right"><span class="mode-pill" id="mode-pill">选择在线模型</span><button class="archive-toggle hidden" id="archive-room" type="button">归档</button><div class="avatar">N</div></div>
+        <button class="menu-toggle" id="menu-toggle" aria-label="Open chat list" data-i18n-aria-label="openChatList">☰</button>
+        <div class="topbar-title"><div class="eyebrow">RESIDENT WORKSPACE</div><h1 id="room-title">Start a conversation</h1></div>
+        <div class="topbar-right"><span class="mode-pill" id="mode-pill">Choose an online model</span><button class="archive-toggle hidden" id="archive-room" type="button" data-i18n="archive">Archive</button><div class="avatar">N</div></div>
       </header>
 
       <section class="welcome" id="welcome">
         <div class="welcome-orb"><span>✳</span></div>
         <div class="welcome-kicker">YOUR AGENT WORKSPACE</div>
-        <h2>让想法，在对话中推进。</h2>
-        <p>点击左侧在线模型，直接开始单聊。需要协作时，创建群聊并邀请不同的 LLM Resident 接力分析、相互补充。</p>
-        <button class="primary-button" id="welcome-create">与在线模型对话 <span>↗</span></button>
-        <div class="welcome-capabilities"><span><i class="cap-dot blue"></i> 单聊 · 专注执行</span><span><i class="cap-dot amber"></i> 群聊 · 多 Agent 协作</span></div>
+        <h2 data-i18n="welcomeTitle">Move ideas forward through conversation.</h2>
+        <p data-i18n="welcomeDescription">Choose an online model on the left to start a private chat. For collaboration, create a group and invite different LLM Residents to build on each other's work.</p>
+        <button class="primary-button" id="welcome-create"><span class="welcome-create-label" data-i18n="chatWithModel">Chat with an online model</span> <span>↗</span></button>
+        <div class="welcome-capabilities"><span><i class="cap-dot blue"></i> <span data-i18n="soloCapability">Private chat · focused work</span></span><span><i class="cap-dot amber"></i> <span data-i18n="groupCapability">Group chat · multi-agent collaboration</span></span></div>
       </section>
 
-      <section class="conversation hidden" id="conversation" aria-label="聊天内容">
+      <section class="conversation hidden" id="conversation" aria-label="Conversation" data-i18n-aria-label="conversation">
         <div class="messages" id="messages" aria-live="polite"></div>
-        <div class="working hidden" id="working"><span class="typing"><i></i><i></i><i></i></span><span id="working-label">Resident 正在处理…</span></div>
+        <div class="working hidden" id="working"><span class="typing"><i></i><i></i><i></i></span><span id="working-label">Resident is working…</span></div>
       </section>
 
-        <div class="composer-wrap hidden" id="composer-wrap"><form class="composer" id="composer"><textarea id="message-input" placeholder="发送消息给 Resident…" rows="1" maxlength="20000" aria-label="消息内容"></textarea><div class="pending-files" id="pending-files"></div><div class="composer-bottom"><div class="composer-actions"><label class="attach-button" for="file-input" title="添加图片或 GIF">＋ 图片 / GIF</label><input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden><span>Enter 发送 · Shift + Enter 换行</span></div><button type="submit" id="send-button" aria-label="发送消息">↑</button></div></form><p class="composer-note" id="composer-note">Resident 可能出错。重要结论请核实。</p></div>
+        <div class="composer-wrap hidden" id="composer-wrap"><form class="composer" id="composer"><textarea id="message-input" placeholder="Message a Resident…" data-i18n-placeholder="messagePlaceholder" rows="1" maxlength="20000" aria-label="Message" data-i18n-aria-label="message"></textarea><div class="pending-files" id="pending-files"></div><div class="composer-bottom"><div class="composer-actions"><label class="attach-button" for="file-input" title="Add an image or GIF" data-i18n-title="attachHint">＋ <span data-i18n="imageGif">Image / GIF</span></label><input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden><span data-i18n="keyboardHint">Enter to send · Shift + Enter for a new line</span></div><button type="submit" id="send-button" aria-label="Send message" data-i18n-aria-label="sendMessage">↑</button></div></form><p class="composer-note" id="composer-note">Residents can make mistakes. Verify important conclusions.</p></div>
       <div class="toast hidden" id="toast" role="alert"></div>
     </main>
   </div>
 
   <div class="modal-backdrop hidden" id="modal-backdrop"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-    <div class="modal-header"><div><div class="eyebrow">NEW GROUP</div><h2 id="modal-title">创建群聊</h2></div><button class="close-button" id="close-modal" aria-label="关闭">×</button></div>
-    <p class="modal-description">从在线模型中选择至少两个不同的 LLM Resident，组成协作群聊。</p>
-    <form id="create-form"><label class="field-label" for="new-room-name">会话名称</label><input id="new-room-name" maxlength="80" placeholder="例如：讨论新功能方案" required>
-      <div class="field-row"><span class="field-label">选择 LLM Resident</span><span id="selected-count">已选 0 个</span></div>
+    <div class="modal-header"><div><div class="eyebrow">NEW GROUP</div><h2 id="modal-title" data-i18n="createGroup">Create group</h2></div><button class="close-button" id="close-modal" aria-label="Close" data-i18n-aria-label="close">×</button></div>
+    <p class="modal-description" data-i18n="createGroupDescription">Choose at least two different online LLM Residents to collaborate.</p>
+    <form id="create-form"><label class="field-label" for="new-room-name" data-i18n="roomName">Chat name</label><input id="new-room-name" maxlength="80" placeholder="For example: Discuss a new feature" data-i18n-placeholder="roomNameExample" required>
+      <div class="field-row"><span class="field-label" data-i18n="chooseResidents">Choose LLM Residents</span><span id="selected-count">0 selected</span></div>
       <div class="resident-options" id="resident-options"></div>
-      <div class="modal-footer"><span id="mode-preview">至少选择 2 个模型</span><button class="primary-button" id="create-button" type="submit">创建群聊 <span>→</span></button></div>
+      <div class="modal-footer"><span id="mode-preview">Choose at least 2 models</span><button class="primary-button" id="create-button" type="submit"><span class="create-button-label" data-i18n="createGroup">Create group</span> <span>→</span></button></div>
     </form>
   </div></div>
   <div class="settings-page hidden" id="settings-page">
-   <div class="settings-panel" role="dialog" aria-modal="true" aria-label="设置">
-    <button class="settings-close" id="close-settings" type="button" aria-label="关闭设置" title="关闭设置">×</button>
-    <aside class="settings-sidebar" aria-label="设置导航">
-      <div class="settings-sidebar-title">设置</div>
-      <div class="settings-nav-heading">偏好</div>
-      <button class="settings-nav-button" id="settings-nav-preferences" type="button"><span aria-hidden="true">⚙</span> 常规</button>
-      <div class="settings-nav-heading settings-nav-heading-archive">聊天</div>
-      <button class="settings-nav-button" id="settings-nav-archives" type="button"><span aria-hidden="true">▣</span> 已归档的聊天 <span class="settings-nav-count" id="archive-count">0</span></button>
+   <div class="settings-panel" role="dialog" aria-modal="true" aria-label="Settings" data-i18n-aria-label="settings">
+    <button class="settings-close" id="close-settings" type="button" aria-label="Close settings" title="Close settings" data-i18n-aria-label="closeSettings" data-i18n-title="closeSettings">×</button>
+    <aside class="settings-sidebar" aria-label="Settings navigation" data-i18n-aria-label="settingsNavigation">
+      <div class="settings-sidebar-title" data-i18n="settings">Settings</div>
+      <div class="settings-nav-heading" data-i18n="preferences">Preferences</div>
+      <button class="settings-nav-button" id="settings-nav-preferences" type="button"><span aria-hidden="true">⚙</span> <span data-i18n="general">General</span></button>
+      <div class="settings-nav-heading settings-nav-heading-archive" data-i18n="chats">Chats</div>
+      <button class="settings-nav-button" id="settings-nav-archives" type="button"><span aria-hidden="true">▣</span> <span data-i18n="archivedChats">Archived chats</span> <span class="settings-nav-count" id="archive-count">0</span></button>
     </aside>
     <main class="settings-main">
       <section class="settings-content" id="settings-archives-view" aria-labelledby="settings-archives-title">
-        <div class="settings-page-header"><h1 id="settings-archives-title">已归档的聊天</h1></div>
+        <div class="settings-page-header"><h1 id="settings-archives-title" data-i18n="archivedChats">Archived chats</h1></div>
         <div class="archive-controls">
-          <label class="archive-search"><span aria-hidden="true">⌕</span><input id="archive-search" type="search" placeholder="搜索已归档聊天" aria-label="搜索已归档聊天"></label>
+          <label class="archive-search"><span aria-hidden="true">⌕</span><input id="archive-search" type="search" placeholder="Search archived chats" aria-label="Search archived chats" data-i18n-placeholder="searchArchived" data-i18n-aria-label="searchArchived"></label>
           <div class="archive-filter">
-            <button class="archive-filter-trigger" id="archive-type-filter" type="button" data-value="all" aria-label="聊天类型：全部聊天" aria-haspopup="listbox" aria-expanded="false" aria-controls="archive-type-options"><span class="archive-filter-text">全部聊天</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>
-            <div class="archive-filter-menu hidden" id="archive-type-options" role="listbox" aria-label="聊天类型"><button class="archive-filter-option" type="button" role="option" tabindex="-1" data-value="all" aria-selected="true">全部聊天</button><button class="archive-filter-option" type="button" role="option" tabindex="-1" data-value="solo" aria-selected="false">单聊</button><button class="archive-filter-option" type="button" role="option" tabindex="-1" data-value="group" aria-selected="false">群聊</button></div>
+            <button class="archive-filter-trigger" id="archive-type-filter" type="button" data-value="all" aria-label="Chat type: All chats" aria-haspopup="listbox" aria-expanded="false" aria-controls="archive-type-options"><span class="archive-filter-text">All chats</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>
+            <div class="archive-filter-menu hidden" id="archive-type-options" role="listbox" aria-label="Chat type" data-i18n-aria-label="chatType"><button class="archive-filter-option" type="button" role="option" tabindex="-1" data-value="all" data-i18n="allChats" aria-selected="true">All chats</button><button class="archive-filter-option" type="button" role="option" tabindex="-1" data-value="solo" data-i18n="privateChats" aria-selected="false">Private chats</button><button class="archive-filter-option" type="button" role="option" tabindex="-1" data-value="group" data-i18n="groupChats" aria-selected="false">Group chats</button></div>
           </div>
           <div class="archive-filter archive-filter-member">
-            <button class="archive-filter-trigger" id="archive-member-filter" type="button" data-value="all" aria-label="模型筛选：全部模型" aria-haspopup="listbox" aria-expanded="false" aria-controls="archive-member-options"><span class="archive-filter-text">全部模型</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>
-            <div class="archive-filter-menu hidden" id="archive-member-options" role="listbox" aria-label="模型筛选"><button class="archive-filter-option" type="button" role="option" tabindex="-1" data-value="all" aria-selected="true">全部模型</button></div>
+            <button class="archive-filter-trigger" id="archive-member-filter" type="button" data-value="all" aria-label="Model filter: All models" aria-haspopup="listbox" aria-expanded="false" aria-controls="archive-member-options"><span class="archive-filter-text">All models</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>
+            <div class="archive-filter-menu hidden" id="archive-member-options" role="listbox" aria-label="Model filter" data-i18n-aria-label="modelFilter"><button class="archive-filter-option" type="button" role="option" tabindex="-1" data-value="all" aria-selected="true">All models</button></div>
           </div>
         </div>
-        <div class="archive-group-heading"><svg class="archive-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6.5h6l2 2H21v9.5H3z"/></svg><strong>NormaHarness</strong><span id="archive-visible-count">0 个聊天</span></div>
+        <div class="archive-group-heading"><svg class="archive-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6.5h6l2 2H21v9.5H3z"/></svg><strong>NormaHarness</strong><span id="archive-visible-count">0 chats</span></div>
         <div class="settings-archive-list" id="archive-list" role="list" aria-live="polite"></div>
       </section>
       <section class="settings-content hidden" id="settings-preferences-view" aria-labelledby="settings-preferences-title">
-        <div class="settings-page-header"><h1 id="settings-preferences-title">常规</h1></div>
-        <p class="settings-description">当前本地服务的偏好设置。</p>
-        <label class="settings-option"><span><strong>长期记忆</strong><small>开启后，仅在会话休眠或上下文压缩时提取记忆。</small></span><input id="memory-enabled" type="checkbox" role="switch"></label>
+        <div class="settings-page-header"><h1 id="settings-preferences-title" data-i18n="general">General</h1></div>
+        <p class="settings-description" data-i18n="settingsDescription">Preferences for this local service.</p>
+        <div class="settings-option settings-language-option"><span><strong data-i18n="language">Language</strong><small data-i18n="languageDescription">Choose the language used by this page.</small></span><div class="language-toggle" role="group" aria-label="Page language" data-i18n-aria-label="pageLanguage"><button id="language-en" type="button" aria-pressed="true">English</button><button id="language-zh" type="button" aria-pressed="false">简体中文</button></div></div>
+        <label class="settings-option"><span><strong data-i18n="longTermMemory">Long-term memory</strong><small data-i18n="memoryDescription">When enabled, memory is extracted when a conversation becomes idle or its context is compacted.</small></span><input id="memory-enabled" type="checkbox" role="switch"></label>
       </section>
     </main>
    </div>

@@ -1,7 +1,97 @@
 const $ = (id) => document.getElementById(id);
+const translations = {
+  en: {
+    pageTitle: 'Norma · Resident Chat', createGroup: 'Create group', incognitoHint: 'New chats stay out of local history and long-term memory',
+    incognitoMode: 'Incognito mode', newChats: 'New chats', onlineModels: 'Online models', groups: 'Groups', groupChats: 'Group chats',
+    settings: 'Settings', openChatList: 'Open chat list', archive: 'Archive', welcomeTitle: 'Move ideas forward through conversation.',
+    welcomeDescription: "Choose an online model on the left to start a private chat. For collaboration, create a group and invite different LLM Residents to build on each other's work.",
+    chatWithModel: 'Chat with an online model', soloCapability: 'Private chat · focused work', groupCapability: 'Group chat · multi-agent collaboration',
+    conversation: 'Conversation', messagePlaceholder: 'Message a Resident…', message: 'Message', attachHint: 'Add an image or GIF',
+    imageGif: 'Image / GIF', keyboardHint: 'Enter to send · Shift + Enter for a new line', sendMessage: 'Send message',
+    close: 'Close', createGroupDescription: 'Choose at least two different online LLM Residents to collaborate.',
+    roomName: 'Chat name', roomNameExample: 'For example: Discuss a new feature', chooseResidents: 'Choose LLM Residents',
+    closeSettings: 'Close settings', settingsNavigation: 'Settings navigation', preferences: 'Preferences', general: 'General',
+    chats: 'Chats', archivedChats: 'Archived chats', searchArchived: 'Search archived chats', chatType: 'Chat type',
+    allChats: 'All chats', privateChats: 'Private chats', modelFilter: 'Model filter', allModels: 'All models',
+    settingsDescription: 'Preferences for this local service.', language: 'Language', languageDescription: 'Choose the language used by this page.',
+    pageLanguage: 'Page language', longTermMemory: 'Long-term memory',
+    memoryDescription: 'When enabled, memory is extracted when a conversation becomes idle or its context is compacted.',
+    connecting: 'Connecting to Residents…', residentCount: '{count} LLM Residents online', online: 'Online',
+    noResidents: 'No LLM Residents online', saved: 'Saved', incognito: 'Incognito', incognitoGroup: 'Incognito group · current run only',
+    groupMeta: '{models} models · {messages} messages', working: 'Working', noGroups: 'No group chats yet',
+    chatTypeValue: 'Chat type: {value}', modelFilterValue: 'Model filter: {value}', chatCount: '{count} chats',
+    noMessages: 'No messages yet', modelCount: '{count} models', messageCount: '{count} messages',
+    unarchive: 'Unarchive', unarchiveRoom: 'Unarchive {name}', noMatchingArchived: 'No archived chats match your search',
+    noArchived: 'No archived chats yet', you: 'You', finalAnswer: 'Answer for you', waitingFirstReply: 'Waiting for the first reply',
+    workingElapsed: '{member} {status} · {seconds}s elapsed', incognitoConversation: 'Incognito chat',
+    soloTask: 'Single Agent task', collaboration: 'Multi-Agent collaboration · {count}',
+    incognitoNote: 'Incognito chats are not saved to local history and do not create long-term memories.',
+    soloNote: 'A Resident remembers the private and group chats it joins. Verify important conclusions.',
+    groupNote: 'Use @{member} to ask one model; without a mention, all models collaborate.',
+    unarchiveToContinue: 'Unarchive to continue chatting', waitForResident: 'Wait for the Resident to finish…',
+    startConversation: 'Start a conversation', chooseOnlineModel: 'Choose an online model',
+    archivedToast: 'Archived. You can unarchive it in Settings.', unarchivedToast: 'Chat unarchived',
+    memoryStats: '{stored} stored memories · {cached} cached · {hot} hot',
+    memoryEnabled: 'Long-term memory enabled', memoryDisabled: 'Long-term memory disabled',
+    selectedCount: '{count} selected', chooseTwoDifferent: 'Choose at least 2 different models',
+    agentsCollaborating: '{count} Agents collaborating', noLlmResidents: 'No Residents marked as LLM are available. Check Codex sign-in and the server logs.',
+    needAnotherResident: 'Only one model is online. Connect a second distinct LLM Resident to create a group.',
+    incognitoEnabled: 'New private and group chats will use incognito mode',
+    incognitoDisabled: 'New private and group chats will save local history',
+    noOnlineResident: 'No LLM Residents are online', supportedImages: 'Use PNG, JPEG, WebP, or GIF images',
+    imageSizeLimit: 'Each image must be 8 MiB or smaller', imageCountLimit: 'Up to 4 images per message',
+    removeFile: 'Remove {name}', requestFailed: 'Request failed ({status})'
+  },
+  zh: {
+    pageTitle: 'Norma · Resident 聊天', createGroup: '创建群聊', incognitoHint: '新聊天不会保存到本地历史或长期记忆',
+    incognitoMode: '无痕模式', newChats: '新聊天', onlineModels: '在线模型', groups: '群聊', groupChats: '群聊',
+    settings: '设置', openChatList: '打开会话列表', archive: '归档', welcomeTitle: '让想法，在对话中推进。',
+    welcomeDescription: '点击左侧在线模型，直接开始单聊。需要协作时，创建群聊并邀请不同的 LLM Resident 接力分析、相互补充。',
+    chatWithModel: '与在线模型对话', soloCapability: '单聊 · 专注执行', groupCapability: '群聊 · 多 Agent 协作',
+    conversation: '聊天内容', messagePlaceholder: '发送消息给 Resident…', message: '消息内容', attachHint: '添加图片或 GIF',
+    imageGif: '图片 / GIF', keyboardHint: 'Enter 发送 · Shift + Enter 换行', sendMessage: '发送消息',
+    close: '关闭', createGroupDescription: '从在线模型中选择至少两个不同的 LLM Resident，组成协作群聊。',
+    roomName: '会话名称', roomNameExample: '例如：讨论新功能方案', chooseResidents: '选择 LLM Resident',
+    closeSettings: '关闭设置', settingsNavigation: '设置导航', preferences: '偏好', general: '常规',
+    chats: '聊天', archivedChats: '已归档的聊天', searchArchived: '搜索已归档聊天', chatType: '聊天类型',
+    allChats: '全部聊天', privateChats: '单聊', modelFilter: '模型筛选', allModels: '全部模型',
+    settingsDescription: '当前本地服务的偏好设置。', language: '语言', languageDescription: '选择此页面使用的语言。',
+    pageLanguage: '页面语言', longTermMemory: '长期记忆',
+    memoryDescription: '开启后，仅在会话休眠或上下文压缩时提取记忆。',
+    connecting: '正在连接 Resident…', residentCount: '{count} 个 LLM Resident 在线', online: '在线',
+    noResidents: '暂无在线 LLM Resident', saved: '有痕', incognito: '无痕', incognitoGroup: '无痕群聊 · 仅当前运行期间',
+    groupMeta: '{models} 个模型 · {messages} 条消息', working: '正在处理', noGroups: '还没有群聊',
+    chatTypeValue: '聊天类型：{value}', modelFilterValue: '模型筛选：{value}', chatCount: '{count} 个聊天',
+    noMessages: '尚无消息', modelCount: '{count} 个模型', messageCount: '{count} 条消息',
+    unarchive: '取消归档', unarchiveRoom: '取消归档 {name}', noMatchingArchived: '没有匹配的归档聊天',
+    noArchived: '暂无归档聊天', you: '你', finalAnswer: '给你的答复', waitingFirstReply: '首次回复等待中',
+    workingElapsed: '{member} {status} · 已等待 {seconds} 秒', incognitoConversation: '无痕对话',
+    soloTask: '单 Agent 任务', collaboration: '多 Agent 协作 · {count}',
+    incognitoNote: '无痕会话不会保存到本地历史，也不会提取长期记忆。',
+    soloNote: '同一个 Resident 会记得它参与的私聊和群聊。重要结论请核实。',
+    groupNote: '可用 @{member} 定向提问；不 @ 时全体协作。',
+    unarchiveToContinue: '取消归档后可继续对话', waitForResident: '等待 Resident 完成当前任务…',
+    startConversation: '开始一次对话', chooseOnlineModel: '选择在线模型',
+    archivedToast: '已归档，可在设置中取消归档', unarchivedToast: '已取消归档',
+    memoryStats: '原始记忆 {stored} 条 · cache {cached} 条 · hot {hot} 条',
+    memoryEnabled: '长期记忆已开启', memoryDisabled: '长期记忆已关闭',
+    selectedCount: '已选 {count} 个', chooseTwoDifferent: '至少选择 2 个不同模型',
+    agentsCollaborating: '{count} 个 Agent 协作', noLlmResidents: '当前没有标注为 llm 的 Resident。请检查 Codex 登录和服务端启动日志。',
+    needAnotherResident: '目前只有一个在线模型。还需接入另一个不同的 LLM Resident 才能创建群聊。',
+    incognitoEnabled: '新开的单聊和群聊将使用无痕模式',
+    incognitoDisabled: '新开的单聊和群聊将保存本地历史',
+    noOnlineResident: '当前没有在线的 LLM Resident', supportedImages: '支持 PNG、JPEG、WebP 和 GIF',
+    imageSizeLimit: '单张图片最多 8 MiB', imageCountLimit: '每条消息最多 4 张图片',
+    removeFile: '移除 {name}', requestFailed: '请求失败 ({status})'
+  }
+};
+let language = 'en';
+try { if (localStorage.getItem('norma-ui-language') === 'zh') language = 'zh'; } catch { /* Storage may be unavailable. */ }
+const t = (key, values = {}) => (translations[language][key] || translations.en[key] || key)
+  .replace(/\{(\w+)\}/g, (_, name) => values[name] ?? '');
 let incognitoMode = false;
 try { incognitoMode = localStorage.getItem('norma-incognito-mode') === 'true'; } catch { /* Storage may be unavailable. */ }
-const state = { residents: [], rooms: [], selected: null, room: null, events: null, fingerprint: '', files: [], incognitoMode };
+const state = { residents: [], rooms: [], selected: null, room: null, events: null, fingerprint: '', files: [], incognitoMode, residentsLoaded: false, memoryStatus: null };
 // randomUUID is unavailable on non-secure LAN HTTP origins; getRandomValues still works there.
 const clientId = crypto.randomUUID?.()
   ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -38,7 +128,7 @@ function isOpenAiModel(model) {
 async function request(path, options) {
   const response = await fetch(path, { ...options, headers: options?.body instanceof FormData ? options?.headers : { 'Content-Type': 'application/json', ...(options?.headers || {}) } });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `请求失败 (${response.status})`);
+  if (!response.ok) throw new Error(data.error || t('requestFailed', { status: response.status }));
   return data;
 }
 
@@ -106,18 +196,18 @@ function renderSidebar() {
     const title = document.createElement('strong');
     title.textContent = modelName(model);
     const sub = document.createElement('small');
-    sub.textContent = state.incognitoMode ? `${model.provider} · ${model.key} · 无痕` : `${model.provider} · ${model.key} · 有痕`;
+    sub.textContent = `${model.provider} · ${model.key} · ${t(state.incognitoMode ? 'incognito' : 'saved')}`;
     copy.append(title, sub);
     const online = document.createElement('span');
     online.className = 'online-indicator';
-    online.title = '在线';
+    online.title = t('online');
     button.append(icon, copy, online);
     models.append(button);
   }
   if (!state.residents.length) {
     const empty = document.createElement('div');
     empty.className = 'sidebar-empty';
-    empty.textContent = '暂无在线 LLM Resident';
+    empty.textContent = t('noResidents');
     models.append(empty);
   }
 
@@ -138,13 +228,13 @@ function renderSidebar() {
     const title = document.createElement('strong');
     title.textContent = room.name;
     const sub = document.createElement('small');
-    sub.textContent = room.incognito ? '无痕群聊 · 仅当前运行期间' : `${room.members.length} 个模型 · ${room.messages.length} 条消息`;
+    sub.textContent = room.incognito ? t('incognitoGroup') : t('groupMeta', { models: room.members.length, messages: room.messages.length });
     copy.append(title, sub);
     button.append(icon, copy);
     if (room.busy) {
       const busy = document.createElement('span');
       busy.className = 'room-busy';
-      busy.title = '正在处理';
+      busy.title = t('working');
       button.append(busy);
     }
     groups.append(button);
@@ -152,7 +242,7 @@ function renderSidebar() {
   if (!groupRooms.length) {
     const empty = document.createElement('div');
     empty.className = 'sidebar-empty';
-    empty.textContent = '还没有群聊';
+    empty.textContent = t('noGroups');
     groups.append(empty);
   }
 }
@@ -168,7 +258,7 @@ function setArchiveFilterValue(kind, value) {
   if (!selected) return;
   trigger.dataset.value = selected.dataset.value;
   trigger.querySelector('.archive-filter-text').textContent = selected.textContent;
-  trigger.setAttribute('aria-label', `${kind === 'type' ? '聊天类型' : '模型筛选'}：${selected.textContent}`);
+  trigger.setAttribute('aria-label', t(kind === 'type' ? 'chatTypeValue' : 'modelFilterValue', { value: selected.textContent }));
   for (const option of options) option.setAttribute('aria-selected', String(option === selected));
 }
 
@@ -210,7 +300,7 @@ function renderArchivedRooms() {
     option.setAttribute('role', 'option');
     option.tabIndex = -1;
     option.dataset.value = key;
-    option.textContent = key === 'all' ? '全部模型' : modelName(state.residents.find((resident) => resident.key === key) || { model: key });
+    option.textContent = key === 'all' ? t('allModels') : modelName(state.residents.find((resident) => resident.key === key) || { model: key });
     modelMenu.append(option);
   }
   setArchiveFilterValue('member', memberKeys.includes(previousModel) ? previousModel : 'all');
@@ -226,7 +316,7 @@ function renderArchivedRooms() {
       || room.members.some((key) => key.toLocaleLowerCase().includes(query))
       || room.messages.some((message) => message.text.toLocaleLowerCase().includes(query));
   });
-  $('archive-visible-count').textContent = `${visibleRooms.length} 个聊天`;
+  $('archive-visible-count').textContent = t('chatCount', { count: visibleRooms.length });
   for (const room of [...visibleRooms].sort((a, b) => b.last_activity_ms - a.last_activity_ms)) {
     const row = document.createElement('div');
     row.className = 'archive-chat-row';
@@ -241,15 +331,15 @@ function renderArchivedRooms() {
     const details = document.createElement('small');
     details.className = 'archive-chat-meta';
     const date = room.messages.at(-1)?.created_at || room.last_activity_ms;
-    const when = date ? new Date(date).toLocaleString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '尚无消息';
-    const members = model ? modelName(model) : room.members.length === 1 ? room.members[0] : `${room.members.length} 个模型`;
-    details.textContent = `${when} · ${members} · ${room.messages.length} 条消息`;
+    const when = date ? new Date(date).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : t('noMessages');
+    const members = model ? modelName(model) : room.members.length === 1 ? room.members[0] : t('modelCount', { count: room.members.length });
+    details.textContent = `${when} · ${members} · ${t('messageCount', { count: room.messages.length })}`;
     copy.append(title, details);
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'settings-unarchive';
-    button.textContent = '取消归档';
-    button.setAttribute('aria-label', `取消归档 ${room.name}`);
+    button.textContent = t('unarchive');
+    button.setAttribute('aria-label', t('unarchiveRoom', { name: room.name }));
     button.addEventListener('click', () => unarchiveRoom(room.id, button));
     row.append(copy, button);
     archive.append(row);
@@ -257,7 +347,7 @@ function renderArchivedRooms() {
   if (!visibleRooms.length) {
     const empty = document.createElement('div');
     empty.className = 'archive-chat-empty';
-    empty.textContent = archivedRooms.length ? '没有匹配的归档聊天' : '暂无归档聊天';
+    empty.textContent = t(archivedRooms.length ? 'noMatchingArchived' : 'noArchived');
     archive.append(empty);
   }
 }
@@ -277,19 +367,19 @@ function renderMessages(room) {
     if ((message.role === 'agent' || message.role === 'summary') && isOpenAiModel(state.residents.find((model) => model.key === message.author))) {
       addGptIcon(icon);
     } else {
-      icon.textContent = message.role === 'user' ? '你' : message.role === 'error' ? '!' : message.role === 'summary' ? '✓' : '✳';
+      icon.textContent = message.role === 'user' ? t('you') : message.role === 'error' ? '!' : message.role === 'summary' ? '✓' : '✳';
     }
     const body = document.createElement('div');
     body.className = 'message-body';
     const meta = document.createElement('div');
     meta.className = 'message-meta';
     const name = document.createElement('span');
-    name.textContent = message.author;
+    name.textContent = message.role === 'user' ? t('you') : message.author;
     meta.append(name);
     if (message.role === 'summary') {
       const tag = document.createElement('span');
       tag.className = 'summary-tag';
-      tag.textContent = '给你的答复';
+      tag.textContent = t('finalAnswer');
       meta.append(tag);
     }
     const text = document.createElement('div');
@@ -333,31 +423,31 @@ function updateWorking() {
   const elapsed = lastMessage ? Math.max(0, Math.floor((Date.now() - lastMessage.created_at) / 1000)) : 0;
   const member = room.active_member || 'Resident';
   const firstReply = room.messages.length === 1 && room.messages[0].role === 'user';
-  const status = firstReply && elapsed >= 30 ? '首次回复等待中' : '正在处理';
-  $('working-label').textContent = `${member} ${status} · 已等待 ${elapsed} 秒`;
+  const status = t(firstReply && elapsed >= 30 ? 'waitingFirstReply' : 'working');
+  $('working-label').textContent = t('workingElapsed', { member, status, seconds: elapsed });
 }
 
 function renderRoom(room) {
   state.room = room;
   const soloModel = roomModel(room);
-  const title = soloModel ? `${modelName(soloModel)}${room.incognito ? ' · 无痕' : ''}` : room.name;
+  const title = soloModel ? `${modelName(soloModel)}${room.incognito ? ' · ' + t('incognito') : ''}` : room.name;
   $('welcome').classList.add('hidden');
   $('conversation').classList.remove('hidden');
   $('composer-wrap').classList.remove('hidden');
   $('room-title').textContent = title;
-  $('mode-pill').textContent = room.incognito ? '无痕对话' : room.members.length === 1 ? '单 Agent 任务' : `多 Agent 协作 · ${room.members.length}`;
+  $('mode-pill').textContent = room.incognito ? t('incognitoConversation') : room.members.length === 1 ? t('soloTask') : t('collaboration', { count: room.members.length });
   $('archive-room').classList.toggle('hidden', room.incognito || room.archived);
-  $('composer-note').textContent = room.incognito ? '无痕会话不会保存到本地历史，也不会提取长期记忆。'
+  $('composer-note').textContent = room.incognito ? t('incognitoNote')
     : room.members.length === 1
-    ? '同一个 Resident 会记得它参与的私聊和群聊。重要结论请核实。'
-    : `可用 @{${room.members[0]}} 定向提问；不 @ 时全体协作。`;
+    ? t('soloNote')
+    : t('groupNote', { member: room.members[0] });
   renderMessages(room);
   $('working').classList.toggle('hidden', !room.busy);
   updateWorking();
   $('message-input').disabled = room.busy || room.archived;
   $('send-button').disabled = room.busy || room.archived;
   $('file-input').disabled = room.busy || room.archived;
-  $('message-input').placeholder = room.archived ? '取消归档后可继续对话' : room.busy ? '等待 Resident 完成当前任务…' : '发送消息给 Resident…';
+  $('message-input').placeholder = t(room.archived ? 'unarchiveToContinue' : room.busy ? 'waitForResident' : 'messagePlaceholder');
 }
 
 async function refreshRooms() {
@@ -397,8 +487,8 @@ function clearSelectedRoom() {
   $('conversation').classList.add('hidden');
   $('composer-wrap').classList.add('hidden');
   $('archive-room').classList.add('hidden');
-  $('room-title').textContent = '开始一次对话';
-  $('mode-pill').textContent = '选择在线模型';
+  $('room-title').textContent = t('startConversation');
+  $('mode-pill').textContent = t('chooseOnlineModel');
   renderSidebar();
 }
 
@@ -436,7 +526,7 @@ $('archive-room').addEventListener('click', async () => {
     });
     if (state.selected === id) clearSelectedRoom();
     await refreshRooms();
-    toast('已归档，可在设置中取消归档');
+    toast(t('archivedToast'));
   } catch (error) { toast(error.message); }
 });
 
@@ -450,7 +540,7 @@ async function unarchiveRoom(id, button) {
     closeSettings();
     await selectRoom(id);
     if (state.selected === id && state.room) $('message-input').focus();
-    toast('已取消归档');
+    toast(t('unarchivedToast'));
   } catch (error) { toast(error.message); }
   finally { button.disabled = false; }
 }
@@ -472,8 +562,9 @@ async function openSolo(key) {
 
 async function refreshMemory() {
   const status = await request('/api/memory');
+  state.memoryStatus = status;
   $('memory-enabled').checked = status.enabled;
-  $('memory-enabled').title = `原始记忆 ${status.stored} 条 · cache ${status.cached} 条 · hot ${status.hot} 条`;
+  $('memory-enabled').title = t('memoryStats', status);
 }
 
 $('memory-enabled').addEventListener('change', async (event) => {
@@ -481,7 +572,7 @@ $('memory-enabled').addEventListener('change', async (event) => {
   try {
     const status = await request('/api/memory', { method: 'POST', body: JSON.stringify({ enabled: event.target.checked }) });
     event.target.checked = status.enabled;
-    toast(status.enabled ? '长期记忆已开启' : '长期记忆已关闭');
+    toast(t(status.enabled ? 'memoryEnabled' : 'memoryDisabled'));
     await refreshMemory();
   } catch (error) { event.target.checked = !event.target.checked; toast(error.message); }
   finally { event.target.disabled = false; }
@@ -489,7 +580,8 @@ $('memory-enabled').addEventListener('change', async (event) => {
 
 async function loadResidents() {
   state.residents = await request('/api/residents');
-  $('resident-count').textContent = `${state.residents.length} 个 LLM Resident 在线`;
+  state.residentsLoaded = true;
+  $('resident-count').textContent = t('residentCount', { count: state.residents.length });
   renderSidebar();
   renderResidentOptions();
 }
@@ -500,8 +592,8 @@ function selectedMembers() {
 
 function updateModePreview() {
   const count = selectedMembers().length;
-  $('selected-count').textContent = `已选 ${count} 个`;
-  $('mode-preview').textContent = count < 2 ? '至少选择 2 个不同模型' : `${count} 个 Agent 协作${state.incognitoMode ? ' · 无痕' : ''}`;
+  $('selected-count').textContent = t('selectedCount', { count });
+  $('mode-preview').textContent = count < 2 ? t('chooseTwoDifferent') : `${t('agentsCollaborating', { count })}${state.incognitoMode ? ' · ' + t('incognito') : ''}`;
   $('create-button').disabled = count < 2;
 }
 
@@ -512,12 +604,12 @@ function renderResidentOptions() {
   if (!state.residents.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-residents';
-    empty.textContent = '当前没有标注为 llm 的 Resident。请检查 Codex 登录和服务端启动日志。';
+    empty.textContent = t('noLlmResidents');
     options.append(empty);
   } else if (state.residents.length === 1) {
     const hint = document.createElement('div');
     hint.className = 'empty-residents';
-    hint.textContent = '目前只有一个在线模型。还需接入另一个不同的 LLM Resident 才能创建群聊。';
+    hint.textContent = t('needAnotherResident');
     options.append(hint);
   }
   for (const resident of state.residents) {
@@ -587,7 +679,7 @@ $('incognito-mode').addEventListener('change', (event) => {
   try { localStorage.setItem('norma-incognito-mode', String(state.incognitoMode)); } catch { /* Storage may be unavailable. */ }
   renderSidebar();
   updateModePreview();
-  toast(state.incognitoMode ? '新开的单聊和群聊将使用无痕模式' : '新开的单聊和群聊将保存本地历史');
+  toast(t(state.incognitoMode ? 'incognitoEnabled' : 'incognitoDisabled'));
 });
 $('settings-button').addEventListener('click', openSettings);
 $('close-settings').addEventListener('click', closeSettings);
@@ -633,7 +725,7 @@ document.addEventListener('pointerdown', (event) => {
 });
 $('welcome-create').addEventListener('click', () => {
   if (state.residents[0]) openSolo(state.residents[0].key);
-  else toast('当前没有在线的 LLM Resident');
+  else toast(t('noOnlineResident'));
 });
 $('close-modal').addEventListener('click', closeModal);
 $('modal-backdrop').addEventListener('click', (event) => { if (event.target === $('modal-backdrop')) closeModal(); });
@@ -682,9 +774,9 @@ $('composer').addEventListener('submit', async (event) => {
 
 function addFiles(files) {
   for (const file of files) {
-    if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)) { toast('支持 PNG、JPEG、WebP 和 GIF'); continue; }
-    if (file.size > 8 * 1024 * 1024) { toast('单张图片最多 8 MiB'); continue; }
-    if (state.files.length >= 4) { toast('每条消息最多 4 张图片'); break; }
+    if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)) { toast(t('supportedImages')); continue; }
+    if (file.size > 8 * 1024 * 1024) { toast(t('imageSizeLimit')); continue; }
+    if (state.files.length >= 4) { toast(t('imageCountLimit')); break; }
     state.files.push(file);
   }
   renderPendingFiles();
@@ -700,7 +792,7 @@ function renderPendingFiles() {
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.textContent = '×';
-    remove.setAttribute('aria-label', `移除 ${file.name}`);
+    remove.setAttribute('aria-label', t('removeFile', { name: file.name }));
     remove.addEventListener('click', () => { state.files.splice(index, 1); renderPendingFiles(); });
     chip.append(remove);
     list.append(chip);
@@ -731,6 +823,38 @@ $('message-input').addEventListener('input', (event) => {
   event.target.style.height = 'auto';
   event.target.style.height = `${Math.min(event.target.scrollHeight, 150)}px`;
 });
+
+function applyLanguage(nextLanguage) {
+  language = nextLanguage === 'zh' ? 'zh' : 'en';
+  try { localStorage.setItem('norma-ui-language', language); } catch { /* Storage may be unavailable. */ }
+  document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en';
+  document.title = t('pageTitle');
+  for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = t(node.dataset.i18n);
+  for (const [attribute, key] of [['title', 'i18nTitle'], ['placeholder', 'i18nPlaceholder'], ['aria-label', 'i18nAriaLabel']]) {
+    for (const node of document.querySelectorAll(`[data-${key.replace(/[A-Z]/g, (letter) => '-' + letter.toLowerCase())}]`)) {
+      node.setAttribute(attribute, t(node.dataset[key]));
+    }
+  }
+  for (const code of ['en', 'zh']) $('language-' + code).setAttribute('aria-pressed', String(language === code));
+  $('resident-count').textContent = state.residentsLoaded ? t('residentCount', { count: state.residents.length }) : t('connecting');
+  renderSidebar();
+  renderArchivedRooms();
+  setArchiveFilterValue('type', $('archive-type-filter').dataset.value);
+  if (state.residentsLoaded) renderResidentOptions();
+  else updateModePreview();
+  if (state.memoryStatus) $('memory-enabled').title = t('memoryStats', state.memoryStatus);
+  state.fingerprint = '';
+  if (state.room) renderRoom(state.room);
+  else {
+    $('room-title').textContent = t('startConversation');
+    $('mode-pill').textContent = t('chooseOnlineModel');
+  }
+  renderPendingFiles();
+}
+
+$('language-en').addEventListener('click', () => applyLanguage('en'));
+$('language-zh').addEventListener('click', () => applyLanguage('zh'));
+applyLanguage(language);
 
 (async () => {
   try {
